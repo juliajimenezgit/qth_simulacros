@@ -87,6 +87,29 @@ create table if not exists quality_instructions (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists quality_source_documents (
+  id uuid primary key default gen_random_uuid(),
+  source_type text not null check (source_type in ('OFFICIAL_EXAM', 'ANNOTATED_GUIDE', 'QUALITY_GUIDE')),
+  filename text not null,
+  source_path text not null unique,
+  checksum text not null,
+  page_count integer not null default 0,
+  processed_at timestamptz not null default now(),
+  metadata jsonb not null default '{}'::jsonb
+);
+
+create table if not exists quality_knowledge_chunks (
+  id uuid primary key default gen_random_uuid(),
+  source_document_id uuid not null references quality_source_documents(id) on delete cascade,
+  source_type text not null,
+  text text not null,
+  page integer,
+  section text,
+  metadata jsonb not null default '{}'::jsonb,
+  embedding vector(1536),
+  created_at timestamptz not null default now()
+);
+
 create table if not exists activity_logs (
   id uuid primary key default gen_random_uuid(),
   user_id uuid references users(id) on delete set null,
@@ -102,6 +125,7 @@ create index if not exists document_chunks_document_id_idx on document_chunks(do
 create index if not exists questions_user_id_idx on questions(user_id);
 create index if not exists questions_document_id_idx on questions(document_id);
 create index if not exists quality_instructions_active_idx on quality_instructions(active);
+create index if not exists quality_knowledge_source_idx on quality_knowledge_chunks(source_type);
 create index if not exists activity_logs_created_at_idx on activity_logs(created_at desc);
 
 create index if not exists document_chunks_embedding_idx
@@ -112,3 +136,6 @@ create index if not exists questions_embedding_idx
 
 create index if not exists quality_instructions_embedding_idx
   on quality_instructions using hnsw (embedding vector_cosine_ops);
+
+create index if not exists quality_knowledge_embedding_idx
+  on quality_knowledge_chunks using hnsw (embedding vector_cosine_ops);

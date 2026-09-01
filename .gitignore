@@ -11,3 +11,6 @@ server/storage/pdfs/*
 
 # Biblioteca local de manuales; no forma parte del código de la aplicación.
 temario/
+
+# Fuentes privadas para entrenar el RAG; nunca se publican en Git.
+quality_sources/

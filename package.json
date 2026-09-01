@@ -12,6 +12,9 @@
     "dev:server": "npm --workspace server run dev",
     "dev:client": "npm --workspace client run dev",
     "db:init": "psql \"$DATABASE_URL\" -f database/init.sql",
+    "ingest-quality": "npm --workspace server run ingest-quality --",
+    "quality:export-instructions": "npm --workspace server run quality:export-instructions --",
+    "quality:apply-instructions": "npm --workspace server run quality:apply-instructions --",
     "lint": "npm --workspace server run lint && npm --workspace client run lint"
   },
   "devDependencies": {

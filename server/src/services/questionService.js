@@ -13,6 +13,10 @@ import {
 } from "./openaiService.js";
 import { normalizeFilename, normalizeUnicode } from "../utils/unicode.js";
 import { retrieveQualityInstructions } from "./qualityInstructionService.js";
+import {
+  formatPrivateQualityKnowledge,
+  retrievePrivateQualityKnowledge,
+} from "./qualityKnowledgeService.js";
 
 const EMBEDDING_BATCH_SIZE = 64;
 
@@ -155,6 +159,10 @@ export async function generateQuestions({ user, documentId, count, difficulty })
       difficulty,
       contextChunks,
     });
+    const privateQualityKnowledge = await retrievePrivateQualityKnowledge({
+      difficulty,
+      contextChunks,
+    });
     const raw = await createChatJson(
       buildPrompt({
         document,
@@ -163,6 +171,7 @@ export async function generateQuestions({ user, documentId, count, difficulty })
         difficulty,
         previousQuestions,
         qualityInstructions,
+        privateQualityKnowledge,
       }),
       difficulty === "ELITE" ? 0.35 : 0.2,
     );
@@ -415,6 +424,7 @@ function buildPrompt({
   difficulty,
   previousQuestions,
   qualityInstructions,
+  privateQualityKnowledge,
 }) {
   const levelInstructions = {
     PRINCIPIANTE:
@@ -440,6 +450,7 @@ function buildPrompt({
         )
         .join("\n")
     : "No hay instrucciones adicionales configuradas.";
+  const privateKnowledge = formatPrivateQualityKnowledge(privateQualityKnowledge);
 
   return [
     {
@@ -455,6 +466,15 @@ Nivel solicitado: ${difficulty}
 Instrucciones de nivel: ${levelInstructions[difficulty]}
 Instrucciones de calidad recuperadas semanticamente:
 ${retrievedInstructions}
+
+REGLAS PRIVADAS DE CALIDAD (aplícalas como criterios obligatorios de redacción):
+${privateKnowledge.rules}
+
+ANOTACIONES Y PRIORIDADES DE LOS APUNTES (priorizan qué contenido es preguntable; no sustituyen al manual como fuente factual):
+${privateKnowledge.annotations}
+
+EJEMPLOS DE EXÁMENES OFICIALES (imita su estilo, estructura y calidad de distractores; no copies sus hechos ni respuestas):
+${privateKnowledge.officialExamples}
 
 Reparte las preguntas entre apartados distintos del contexto cuando sea posible. Si aparecen formulas, unidades, listas, definiciones normativas o valores numericos, conviertelos en preguntas evaluables.
 El campo source_title debe ser un titulo legible para un profesor. El enunciado se mostrara precedido por ese titulo. No inventes tema, capitulo ni apartado: extraelos del contexto; si no se identifican, indica "No identificado".

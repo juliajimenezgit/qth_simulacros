@@ -8,6 +8,9 @@
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
     "migrate": "node src/db/migrate.js",
+    "ingest-quality": "node src/db/ingestQuality.js",
+    "quality:export-instructions": "node src/db/qualityInstructionsCli.js export",
+    "quality:apply-instructions": "node src/db/qualityInstructionsCli.js apply",
     "seed": "node src/db/seed.js",
     "lint": "node --check src/index.js"
   },
