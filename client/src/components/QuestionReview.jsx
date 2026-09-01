@@ -1,4 +1,4 @@
-import { Download, Save, Search, Trash2 } from "lucide-react";
+import { BookOpen, Download, FileText, Save, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api, getToken } from "../services/api.js";
 
@@ -10,6 +10,9 @@ const emptyEdit = {
   option_d: "",
   correct_answer: "A",
   explanation: "",
+  source_title: "",
+  topic: "",
+  chapter: "",
   reference: "",
   difficulty: "PRINCIPIANTE",
 };
@@ -78,6 +81,9 @@ export default function QuestionReview({
       option_d: question.option_d,
       correct_answer: question.correct_answer,
       explanation: question.explanation,
+      source_title: question.source_title || question.original_filename,
+      topic: question.topic || "",
+      chapter: question.chapter || "",
       reference: question.reference,
       difficulty: question.difficulty,
     });
@@ -207,9 +213,28 @@ export default function QuestionReview({
                       {item.option_d}
                     </li>
                   </ol>
-                  <p>{item.explanation}</p>
+                  <div className="answer-summary">
+                    <strong>Respuesta correcta: {item.correct_answer}</strong>
+                    <p>{item.explanation}</p>
+                  </div>
+                  <aside className="question-source">
+                    <div className="source-heading">
+                      <BookOpen size={18} />
+                      <div>
+                        <small>Manual de origen</small>
+                        <strong>{item.source_title || item.original_filename}</strong>
+                      </div>
+                    </div>
+                    <div className="source-details">
+                      <span><small>Tema</small><strong>{item.topic || "No identificado"}</strong></span>
+                      <span><small>Capítulo</small><strong>{item.chapter || "No identificado"}</strong></span>
+                    </div>
+                    <div className="source-reference">
+                      <FileText size={16} />
+                      <span><small>Referencia concreta</small><strong>{item.reference}</strong></span>
+                    </div>
+                  </aside>
                   <footer>
-                    <span>{item.reference}</span>
                     <div>
                       <button
                         className="secondary-button compact"
@@ -321,8 +346,31 @@ function QuestionEditor({ draft, onCancel, onChange, onSave }) {
           value={draft.explanation}
         />
       </label>
+      <div className="field-row">
+        <label>
+          Manual de origen
+          <input
+            onChange={(event) => update("source_title", event.target.value)}
+            value={draft.source_title}
+          />
+        </label>
+        <label>
+          Tema
+          <input
+            onChange={(event) => update("topic", event.target.value)}
+            value={draft.topic}
+          />
+        </label>
+      </div>
       <label>
-        Referencia
+        Capítulo
+        <input
+          onChange={(event) => update("chapter", event.target.value)}
+          value={draft.chapter}
+        />
+      </label>
+      <label>
+        Referencia concreta del apartado
         <input
           onChange={(event) => update("reference", event.target.value)}
           value={draft.reference}

@@ -46,6 +46,9 @@ const updateSchema = z.object({
   option_d: z.string().min(1).optional(),
   correct_answer: z.enum(["A", "B", "C", "D"]).optional(),
   explanation: z.string().min(5).optional(),
+  source_title: z.string().min(1).optional(),
+  topic: z.string().min(1).optional(),
+  chapter: z.string().min(1).optional(),
   reference: z.string().min(3).optional(),
   difficulty: z.enum(["PRINCIPIANTE", "ELITE", "ALEATORIO"]).optional(),
 });

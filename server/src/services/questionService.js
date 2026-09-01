@@ -11,7 +11,7 @@ import {
   createEmbeddings,
   isOpenAiConfigured,
 } from "./openaiService.js";
-import { normalizeUnicode } from "../utils/unicode.js";
+import { normalizeFilename, normalizeUnicode } from "../utils/unicode.js";
 import { retrieveQualityInstructions } from "./qualityInstructionService.js";
 
 const EMBEDDING_BATCH_SIZE = 64;
@@ -26,6 +26,9 @@ const generatedQuestionSchema = z.object({
       option_d: z.string().min(1),
       correct_answer: z.enum(["A", "B", "C", "D"]),
       explanation: z.string().min(5),
+      source_title: z.string().min(3),
+      topic: z.string().min(1),
+      chapter: z.string().min(1),
       reference: z.string().min(3),
       difficulty: z.enum(["PRINCIPIANTE", "ELITE", "ALEATORIO"]),
       source_chunk_id: z.string().uuid().optional(),
@@ -52,6 +55,7 @@ export async function listQuestions(user, filters = {}) {
     `select
        q.*,
        d.original_filename,
+       d.content_type,
        u.name as owner_name
      from questions q
      join documents d on d.id = q.document_id
@@ -61,7 +65,59 @@ export async function listQuestions(user, filters = {}) {
     params,
   );
 
-  return rows;
+  return rows.map(applyDocumentHierarchy);
+}
+
+function applyDocumentHierarchy(row) {
+  const originalFilename = normalizeFilename(row.original_filename);
+  const manualFilename = resolveManualFilename(originalFilename);
+  let topic = row.topic || "No identificado";
+  let chapter = row.chapter || "No identificado";
+
+  if (row.content_type === "TEMA") {
+    topic = originalFilename;
+    chapter = "No identificado";
+  } else if (row.content_type === "CAPITULO") {
+    chapter = originalFilename;
+  }
+
+  const normalizedQuestion = stripSourcePrefix(
+    normalizeUnicode(row.question).trim(),
+    row.source_title,
+  );
+  const question = normalizedQuestion
+    .toLocaleLowerCase("es-ES")
+    .startsWith(manualFilename.toLocaleLowerCase("es-ES"))
+    ? normalizedQuestion
+    : `${manualFilename}. ${normalizedQuestion}`;
+
+  return {
+    ...row,
+    question,
+    source_title: manualFilename,
+    topic,
+    chapter,
+  };
+}
+
+function stripSourcePrefix(question, previousTitle) {
+  const title = normalizeUnicode(previousTitle || "").trim().replace(/[.?!:;]+$/u, "");
+  if (!title || !question.toLocaleLowerCase("es-ES").startsWith(title.toLocaleLowerCase("es-ES"))) {
+    return question;
+  }
+  return question.slice(title.length).replace(/^[.?!:;\s-]+/u, "").trim();
+}
+
+function resolveManualFilename(originalFilename) {
+  if (/-00-completo\.pdf$/i.test(originalFilename)) {
+    return originalFilename;
+  }
+
+  const inferred = originalFilename.replace(
+    /-\d{2}-[^/]+\.pdf$/i,
+    "-00-completo.pdf",
+  );
+  return inferred === originalFilename ? originalFilename : inferred;
 }
 
 export async function generateQuestions({ user, documentId, count, difficulty }) {
@@ -119,6 +175,7 @@ export async function generateQuestions({ user, documentId, count, difficulty })
       const stored = await saveIfUnique({
         question,
         sourceChunk,
+        document,
         userId: user.id,
         documentId,
       });
@@ -388,7 +445,7 @@ function buildPrompt({
     {
       role: "system",
       content:
-        "Actua como profesor experto en oposiciones de bombero. Genera preguntas tipo examen oficial. Usa exclusivamente el contexto proporcionado. Si no existe informacion suficiente, devuelve menos preguntas; no inventes. Cada pregunta debe tener una sola respuesta inequivocamente correcta, distractores plausibles y una explicacion que justifique la respuesta con el fragmento. Las instrucciones de calidad son reglas de redaccion, nunca fuentes de hechos. Responde siempre con JSON valido.",
+        "Actua como profesor experto en oposiciones de bombero. Genera preguntas tipo examen oficial. Usa exclusivamente el contexto proporcionado. Si no existe informacion suficiente, devuelve menos preguntas; no inventes. Cada pregunta debe tener una sola respuesta inequivocamente correcta, distractores plausibles y una explicacion que justifique la respuesta con el fragmento. Identifica de forma precisa el manual, tema, capitulo y apartado de origen. Las instrucciones de calidad son reglas de redaccion, nunca fuentes de hechos. Responde siempre con JSON valido.",
     },
     {
       role: "user",
@@ -400,6 +457,7 @@ Instrucciones de calidad recuperadas semanticamente:
 ${retrievedInstructions}
 
 Reparte las preguntas entre apartados distintos del contexto cuando sea posible. Si aparecen formulas, unidades, listas, definiciones normativas o valores numericos, conviertelos en preguntas evaluables.
+El campo source_title debe ser un titulo legible para un profesor. El enunciado se mostrara precedido por ese titulo. No inventes tema, capitulo ni apartado: extraelos del contexto; si no se identifican, indica "No identificado".
 
 Evita repetir estas preguntas ya generadas:
 ${previousQuestions.length ? previousQuestions.map((q) => `- ${q}`).join("\n") : "- Ninguna"}
@@ -418,6 +476,9 @@ Devuelve exactamente este formato:
       "option_d": "Respuesta D",
       "correct_answer": "A|B|C|D",
       "explanation": "Explicacion basada en el contexto",
+      "source_title": "Titulo legible del manual o documento de origen, sin extension PDF",
+      "topic": "Tema exacto al que pertenece el contenido",
+      "chapter": "Capitulo exacto al que pertenece el contenido",
       "reference": "Nombre PDF - pagina X - apartado Y si existe",
       "difficulty": "PRINCIPIANTE|ELITE|ALEATORIO",
       "source_chunk_id": "uuid del fragmento usado"
@@ -428,9 +489,30 @@ Devuelve exactamente este formato:
   ];
 }
 
-async function saveIfUnique({ question, sourceChunk, userId, documentId }) {
+async function saveIfUnique({ question, sourceChunk, document, userId, documentId }) {
+  const originalFilename = normalizeFilename(document.original_filename);
+  const sourceTitle = resolveManualFilename(originalFilename);
+  const topic =
+    document.content_type === "TEMA"
+      ? originalFilename
+      : normalizeUnicode(question.topic || "No identificado");
+  const chapter =
+    document.content_type === "TEMA"
+      ? "No identificado"
+      : document.content_type === "CAPITULO"
+        ? originalFilename
+        : normalizeUnicode(question.chapter || "No identificado");
+  const normalizedQuestion = stripSourcePrefix(
+    normalizeUnicode(question.question).trim(),
+    question.source_title,
+  );
+  const prefixedQuestion = normalizedQuestion
+    .toLocaleLowerCase("es-ES")
+    .startsWith(sourceTitle.toLocaleLowerCase("es-ES"))
+    ? normalizedQuestion
+    : `${sourceTitle}. ${normalizedQuestion}`;
   const embedding = await createEmbedding(
-    `${question.question}\n${question.option_a}\n${question.option_b}\n${question.option_c}\n${question.option_d}`,
+    `${prefixedQuestion}\n${question.option_a}\n${question.option_b}\n${question.option_c}\n${question.option_d}`,
   );
   const vector = toVectorLiteral(embedding);
 
@@ -462,23 +544,29 @@ async function saveIfUnique({ question, sourceChunk, userId, documentId }) {
        option_d,
        correct_answer,
        explanation,
+       source_title,
+       topic,
+       chapter,
        reference,
        difficulty,
        embedding
      )
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::vector)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::vector)
      returning *`,
     [
       userId,
       documentId,
       sourceChunk?.id || null,
-      normalizeUnicode(question.question),
+      prefixedQuestion,
       normalizeUnicode(question.option_a),
       normalizeUnicode(question.option_b),
       normalizeUnicode(question.option_c),
       normalizeUnicode(question.option_d),
       question.correct_answer,
       normalizeUnicode(question.explanation),
+      sourceTitle,
+      topic,
+      chapter,
       normalizeUnicode(question.reference),
       question.difficulty,
       vector,
@@ -497,6 +585,9 @@ export async function updateQuestion(questionId, user, payload) {
     "option_d",
     "correct_answer",
     "explanation",
+    "source_title",
+    "topic",
+    "chapter",
     "reference",
     "difficulty",
   ];
@@ -577,6 +668,9 @@ export async function exportQuestionsRows(user, documentId) {
     "Opcion D": item.option_d,
     Correcta: item.correct_answer,
     Explicacion: item.explanation,
+    Manual: item.source_title || item.original_filename,
+    Tema: item.topic || "No identificado",
+    Capitulo: item.chapter || "No identificado",
     Referencia: item.reference,
     Nivel: {
       PRINCIPIANTE: "P",
