@@ -219,3 +219,8 @@ Si funciona, añádela al `PATH`:
 echo 'export PATH="/Applications/Docker.app/Contents/Resources/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
+Solo procesa los PDFs y no aplica cambios hechos directamente en el JSON
+```npm run ingest-quality```
+
+Para ejecutar cambios después de añadir instrucciones en instrucciones_generadas.json
+```npm run quality:apply-instructions```

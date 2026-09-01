@@ -100,6 +100,25 @@ export async function listQuestions(user, filters = {}) {
   return rows.map(applyDocumentHierarchy);
 }
 
+export async function listQuestionSets(user) {
+  const params = [];
+  let ownerClause = "";
+  if (user.role !== "ADMIN") {
+    params.push(user.id);
+    ownerClause = "where qs.user_id = $1";
+  }
+  const { rows } = await query(
+    `select qs.*, count(q.id)::int as question_count
+     from question_sets qs
+     left join questions q on q.question_set_id = qs.id
+     ${ownerClause}
+     group by qs.id
+     order by qs.created_at desc`,
+    params,
+  );
+  return rows;
+}
+
 function applyDocumentHierarchy(row) {
   const originalFilename = normalizeFilename(row.original_filename);
   const manualFilename = resolveManualFilename(originalFilename);
@@ -224,17 +243,23 @@ export async function generateQuestions({ user, documentId, count, difficulty, t
   await ensureDocumentChunkEmbeddings(documentId);
 
   const normalizedCount = Math.min(Math.max(Number(count), 1), 120);
-  const batches = buildBatches(normalizedCount);
   const saved = [];
+  const rejectedQuestionTexts = [];
+  const maxAttempts = Math.ceil(normalizedCount / 8) + 8;
+  let attempt = 0;
 
-  for (const [batchIndex, batchSize] of batches.entries()) {
+  while (saved.length < normalizedCount && attempt < maxAttempts) {
+    const batchSize = Math.min(normalizedCount - saved.length, 8);
     const contextChunks = await pickContextChunks({
       documentId,
       count: batchSize,
       difficulty,
-      batchIndex,
+      batchIndex: attempt,
     });
-    const previousQuestions = await getPreviousQuestionTexts(documentId, user.id);
+    const previousQuestions = [
+      ...(await getPreviousQuestionTexts(documentId, user.id)),
+      ...rejectedQuestionTexts,
+    ];
     const qualityInstructions = await retrieveQualityInstructions({
       difficulty,
       contextChunks,
@@ -254,9 +279,16 @@ export async function generateQuestions({ user, documentId, count, difficulty, t
         qualityInstructions,
         privateQualityKnowledge,
       }),
-      difficulty === "DIFICIL" ? 0.35 : 0.2,
+      Math.min((difficulty === "DIFICIL" ? 0.35 : 0.2) + attempt * 0.04, 0.55),
     );
-    const parsed = generatedQuestionSchema.parse(parseModelJson(raw));
+    let parsed;
+    try {
+      parsed = generatedQuestionSchema.parse(parseModelJson(raw));
+    } catch (error) {
+      console.warn(`Intento ${attempt + 1}: respuesta de preguntas no válida`, error.message);
+      attempt += 1;
+      continue;
+    }
 
     for (const question of parsed.questions.slice(0, batchSize)) {
       const sourceChunk =
@@ -273,8 +305,12 @@ export async function generateQuestions({ user, documentId, count, difficulty, t
 
       if (stored) {
         saved.push(stored);
+      } else {
+        rejectedQuestionTexts.push(question.question);
       }
+      if (saved.length === normalizedCount) break;
     }
+    attempt += 1;
   }
 
   await query(
@@ -286,6 +322,13 @@ export async function generateQuestions({ user, documentId, count, difficulty, t
       JSON.stringify({ requested: normalizedCount, saved: saved.length }),
     ],
   );
+
+  if (saved.length < normalizedCount) {
+    throw new HttpError(
+      422,
+      `Solo se pudieron crear ${saved.length} de ${normalizedCount} preguntas únicas después de ${attempt} intentos`,
+    );
+  }
 
   return saved;
 }
@@ -396,23 +439,15 @@ export async function generateConfiguredQuestions({
     );
     return { questions: saved, test: rows[0] };
   } catch (error) {
+    await query("delete from questions where question_set_id = $1", [test.id]);
     await query(
-      `update question_sets set status = 'ERROR', error_message = $2 where id = $1`,
+      `update question_sets
+       set status = 'ERROR', generated_count = 0, error_message = $2
+       where id = $1`,
       [test.id, normalizeUnicode(error.message || "Error generando el test")],
     );
     throw error;
   }
-}
-
-function buildBatches(count) {
-  const batches = [];
-  let remaining = count;
-  while (remaining > 0) {
-    const size = Math.min(remaining, 8);
-    batches.push(size);
-    remaining -= size;
-  }
-  return batches;
 }
 
 async function pickContextChunks({ documentId, count, difficulty, batchIndex }) {
@@ -786,12 +821,15 @@ export async function deleteQuestion(questionId, user) {
   }
 }
 
-export async function exportQuestionsXlsx(user, documentId) {
-  return exportQuestionsRows(user, documentId);
+export async function exportQuestionsXlsx(user, documentId, testId) {
+  return exportQuestionsRows(user, documentId, testId);
 }
 
-export async function exportQuestionsRows(user, documentId) {
-  const questions = await listQuestions(user, { documentId });
+export async function exportQuestionsRows(user, documentId, testId = "") {
+  if (!testId) {
+    throw new HttpError(400, "Selecciona un test para exportar sus preguntas");
+  }
+  const questions = await listQuestions(user, { documentId, testId });
   if (questions.length === 0) {
     throw new HttpError(404, "No hay preguntas para exportar");
   }

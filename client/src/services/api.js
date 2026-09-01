@@ -77,6 +77,7 @@ export const api = {
     if (testId) params.set("testId", testId);
     return request(`/api/questions${params.size ? `?${params}` : ""}`);
   },
+  questionSets: () => request("/api/questions/tests"),
   generateQuestions: (payload) =>
     request("/api/questions/generate", {
       method: "POST",
@@ -113,10 +114,12 @@ export const api = {
     request(`/api/admin/quality-instructions/${encodeURIComponent(id)}`, {
       method: "DELETE",
     }),
-  exportUrl: (documentId = "", format = "xlsx") => {
+  exportUrl: (documentId = "", format = "xlsx", testId = "") => {
     const exportPath = documentId
       ? `/api/questions/export/${encodeURIComponent(documentId)}`
       : "/api/questions/export";
-    return `${API_URL}${exportPath}?format=${encodeURIComponent(format)}`;
+    const params = new URLSearchParams({ format });
+    if (testId) params.set("testId", testId);
+    return `${API_URL}${exportPath}?${params}`;
   },
 };

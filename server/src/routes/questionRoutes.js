@@ -6,6 +6,7 @@ import {
   exportQuestionsRows,
   generateConfiguredQuestions,
   listQuestions,
+  listQuestionSets,
   updateQuestion,
 } from "../services/questionService.js";
 import { getExportFormat, listExportFormats } from "../services/exportService.js";
@@ -53,6 +54,13 @@ const updateSchema = z.object({
   reference: z.string().min(3).optional(),
   difficulty: z.enum(["PRINCIPIANTE", "FACIL", "DIFICIL"]).optional(),
 });
+
+router.get(
+  "/tests",
+  asyncHandler(async (req, res) => {
+    res.json({ tests: await listQuestionSets(req.user) });
+  }),
+);
 
 router.get(
   "/",
@@ -144,11 +152,18 @@ async function sendQuestionsExport(req, res, documentId = "") {
   }
 
   const format = getExportFormat(formatName);
-  const rows = await exportQuestionsRows(req.user, documentId);
+  let testId = "";
+  if (req.query.testId) {
+    const parsed = z.string().uuid().safeParse(req.query.testId);
+    if (!parsed.success) throw new HttpError(400, "Test no válido");
+    testId = parsed.data;
+  }
+  if (!testId) {
+    throw new HttpError(400, "Selecciona un test para exportar sus preguntas");
+  }
+  const rows = await exportQuestionsRows(req.user, documentId, testId);
   const buffer = await format.build(rows);
-  const filename = documentId
-    ? `qth-simulacro-${documentId}.${format.extension}`
-    : `qth-simulacro-preguntas.${format.extension}`;
+  const filename = `qth-test-${testId}.${format.extension}`;
 
   res.setHeader("Content-Type", format.contentType);
   res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);

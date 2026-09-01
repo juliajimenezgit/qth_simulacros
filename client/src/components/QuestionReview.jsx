@@ -38,8 +38,10 @@ export default function QuestionReview({
   showHeader = true,
 }) {
   const [documents, setDocuments] = useState([]);
+  const [tests, setTests] = useState([]);
   const [questions, setQuestions] = useState([]);
   const [documentId, setDocumentId] = useState(initialDocumentId);
+  const [testId, setTestId] = useState(initialTestId);
   const [editingId, setEditingId] = useState(null);
   const [draft, setDraft] = useState(emptyEdit);
   const [exportFormat, setExportFormat] = useState("xlsx");
@@ -49,19 +51,29 @@ export default function QuestionReview({
     () => documents.find((document) => document.id === documentId),
     [documents, documentId],
   );
+  const selectedTest = useMemo(
+    () => tests.find((test) => test.id === testId),
+    [tests, testId],
+  );
 
   useEffect(() => {
     setDocumentId(initialDocumentId);
   }, [initialDocumentId]);
 
+  useEffect(() => {
+    setTestId(initialTestId);
+  }, [initialTestId]);
+
   async function load() {
     setError("");
     try {
-      const [docData, questionData] = await Promise.all([
+      const [docData, testData, questionData] = await Promise.all([
         api.documents(),
-        api.questions(documentId, initialTestId),
+        api.questionSets(),
+        testId ? api.questions(documentId, testId) : Promise.resolve({ questions: [] }),
       ]);
       setDocuments(docData.documents);
+      setTests(testData.tests);
       setQuestions(questionData.questions);
     } catch (err) {
       setError(err.message);
@@ -70,7 +82,7 @@ export default function QuestionReview({
 
   useEffect(() => {
     load();
-  }, [documentId, initialTestId, refreshKey]);
+  }, [documentId, testId, refreshKey]);
 
   function startEdit(question) {
     setEditingId(question.id);
@@ -110,7 +122,11 @@ export default function QuestionReview({
   }
 
   function exportQuestions() {
-    const url = api.exportUrl(documentId, exportFormat);
+    if (!testId) {
+      setError("Selecciona un test para exportar sus preguntas");
+      return;
+    }
+    const url = api.exportUrl(documentId, exportFormat, testId);
     fetch(url, {
       headers: { Authorization: `Bearer ${getToken()}` },
     })
@@ -122,9 +138,9 @@ export default function QuestionReview({
         const href = URL.createObjectURL(blob);
         const anchor = document.createElement("a");
         anchor.href = href;
-        anchor.download = `${
-          selectedDocument?.original_filename || "simulacro-preguntas"
-        }.${exportFormat}`;
+        const testName = selectedTest?.name || "test-generado";
+        const documentName = selectedDocument?.original_filename;
+        anchor.download = `${documentName ? `${testName}-${documentName}` : testName}.${exportFormat}`;
         anchor.click();
         URL.revokeObjectURL(href);
       })
@@ -141,7 +157,7 @@ export default function QuestionReview({
           </div>
           <div className="panel-actions">
             <ExportControls
-              disabled={questions.length === 0}
+              disabled={!testId || questions.length === 0}
               format={exportFormat}
               onExport={exportQuestions}
               onFormatChange={setExportFormat}
@@ -153,7 +169,7 @@ export default function QuestionReview({
       {!showHeader && (
         <div className="panel-actions">
           <ExportControls
-            disabled={questions.length === 0}
+            disabled={!testId || questions.length === 0}
             format={exportFormat}
             onExport={exportQuestions}
             onFormatChange={setExportFormat}
@@ -162,6 +178,24 @@ export default function QuestionReview({
       )}
 
       <div className="filters">
+        <label>
+          <Search size={18} />
+          <select
+            disabled={Boolean(initialTestId)}
+            onChange={(event) => {
+              setTestId(event.target.value);
+              setDocumentId("");
+            }}
+            value={testId}
+          >
+            <option value="">Selecciona un test</option>
+            {tests.map((test) => (
+              <option key={test.id} value={test.id}>
+                {test.name} ({test.question_count} preguntas)
+              </option>
+            ))}
+          </select>
+        </label>
         <label>
           <Search size={18} />
           <select
@@ -182,7 +216,11 @@ export default function QuestionReview({
 
       <div className="question-list">
         {questions.length === 0 ? (
-          <div className="empty-state">No hay preguntas generadas.</div>
+          <div className="empty-state">
+            {testId
+              ? "Este test no contiene preguntas con los filtros seleccionados."
+              : "Selecciona un test para ver y exportar sus preguntas."}
+          </div>
         ) : (
           questions.map((item) => (
             <article className="question-card" key={item.id}>
