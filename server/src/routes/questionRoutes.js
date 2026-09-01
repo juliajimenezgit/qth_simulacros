@@ -4,7 +4,7 @@ import { requireAuth } from "../middleware/auth.js";
 import {
   deleteQuestion,
   exportQuestionsRows,
-  generateQuestions,
+  generateConfiguredQuestions,
   listQuestions,
   updateQuestion,
 } from "../services/questionService.js";
@@ -16,9 +16,26 @@ const router = Router();
 router.use(requireAuth);
 
 const generateSchema = z.object({
-  documentId: z.string().uuid(),
-  count: z.number().int().min(1).max(120),
-  difficulty: z.enum(["PRINCIPIANTE", "ELITE", "ALEATORIO"]),
+  selectedDocumentIds: z.array(z.string().uuid()).min(1).max(200),
+  contentCounts: z.object({
+    MANUAL: z.number().int().min(0).max(120),
+    TEMA: z.number().int().min(0).max(120),
+    CAPITULO: z.number().int().min(0).max(120),
+  }),
+  difficultyCounts: z.object({
+    P: z.number().int().min(0).max(120),
+    F: z.number().int().min(0).max(120),
+    D: z.number().int().min(0).max(120),
+  }),
+}).superRefine((data, context) => {
+  const contentTotal = Object.values(data.contentCounts).reduce((sum, value) => sum + value, 0);
+  const difficultyTotal = Object.values(data.difficultyCounts).reduce((sum, value) => sum + value, 0);
+  if (contentTotal < 1 || contentTotal > 120 || contentTotal !== difficultyTotal) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Los repartos deben sumar la misma cantidad, entre 1 y 120 preguntas",
+    });
+  }
 });
 
 const updateSchema = z.object({
@@ -63,7 +80,7 @@ router.post(
       );
     }
 
-    const questions = await generateQuestions({
+    const questions = await generateConfiguredQuestions({
       user: req.user,
       ...parsed.data,
     });

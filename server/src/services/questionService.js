@@ -142,6 +142,92 @@ export async function generateQuestions({ user, documentId, count, difficulty })
   return saved;
 }
 
+export async function generateConfiguredQuestions({
+  user,
+  selectedDocumentIds,
+  contentCounts,
+  difficultyCounts,
+}) {
+  const uniqueDocumentIds = [...new Set(selectedDocumentIds)];
+  const params = [uniqueDocumentIds];
+  let ownerClause = "";
+  if (user.role !== "ADMIN") {
+    params.push(user.id);
+    ownerClause = `and user_id = $${params.length}`;
+  }
+
+  const { rows: documents } = await query(
+    `select id, content_type
+     from documents
+     where status = 'AVAILABLE'
+       and id = any($1::uuid[])
+       ${ownerClause}
+     order by created_at, id`,
+    params,
+  );
+  if (documents.length !== uniqueDocumentIds.length) {
+    throw new HttpError(400, "Alguno de los PDFs seleccionados no está disponible");
+  }
+  const documentsByType = documents.reduce((grouped, document) => {
+    grouped[document.content_type] ||= [];
+    grouped[document.content_type].push(document);
+    return grouped;
+  }, {});
+
+  for (const [contentType, count] of Object.entries(contentCounts)) {
+    if (count > 0 && !documentsByType[contentType]?.length) {
+      const labels = { MANUAL: "manuales", TEMA: "temas", CAPITULO: "capítulos" };
+      throw new HttpError(
+        409,
+        `No hay ${labels[contentType]} disponibles para generar ${count} preguntas`,
+      );
+    }
+  }
+
+  const difficultyMap = {
+    P: "PRINCIPIANTE",
+    F: "ELITE",
+    D: "ALEATORIO",
+  };
+  const remainingDifficulty = Object.entries(difficultyCounts).map(
+    ([difficulty, count]) => ({ difficulty: difficultyMap[difficulty], count }),
+  );
+  const jobs = [];
+
+  for (const [contentType, requestedCount] of Object.entries(contentCounts)) {
+    let remainingContent = requestedCount;
+    for (const difficulty of remainingDifficulty) {
+      const count = Math.min(remainingContent, difficulty.count);
+      if (count > 0) jobs.push({ contentType, difficulty: difficulty.difficulty, count });
+      remainingContent -= count;
+      difficulty.count -= count;
+      if (remainingContent === 0) break;
+    }
+  }
+
+  const saved = [];
+  for (const job of jobs) {
+    const matchingDocuments = documentsByType[job.contentType];
+    const baseCount = Math.floor(job.count / matchingDocuments.length);
+    const extra = job.count % matchingDocuments.length;
+
+    for (const [index, document] of matchingDocuments.entries()) {
+      const count = baseCount + (index < extra ? 1 : 0);
+      if (count === 0) continue;
+      saved.push(
+        ...(await generateQuestions({
+          user,
+          documentId: document.id,
+          count,
+          difficulty: job.difficulty,
+        })),
+      );
+    }
+  }
+
+  return saved;
+}
+
 function buildBatches(count) {
   const batches = [];
   let remaining = count;
@@ -275,11 +361,11 @@ function buildPrompt({
 }) {
   const levelInstructions = {
     PRINCIPIANTE:
-      "Preguntas directas, conceptos basicos, orientadas a memorizar contenido literal del temario.",
+      "Nivel P: combina preguntas principiantes y faciles. Deben ser directas, claras y centradas en conceptos fundamentales o contenido literal.",
     ELITE:
-      "Preguntas avanzadas, con detalle exigente de oposicion y distractores plausibles y complejos.",
+      "Nivel F: combina preguntas faciles y dificiles, alternando cuestiones directas con otras exigentes y distractores plausibles.",
     ALEATORIO:
-      "Mezcla preguntas directas y avanzadas. Asigna a cada pregunta el nivel que corresponda.",
+      "Nivel D: mezcla todos los grados, incluyendo preguntas principiantes, faciles y dificiles, con especial presencia de detalles exigentes.",
   };
 
   const context = contextChunks
@@ -492,6 +578,10 @@ export async function exportQuestionsRows(user, documentId) {
     Correcta: item.correct_answer,
     Explicacion: item.explanation,
     Referencia: item.reference,
-    Nivel: item.difficulty,
+    Nivel: {
+      PRINCIPIANTE: "P",
+      ELITE: "F",
+      ALEATORIO: "D",
+    }[item.difficulty] || item.difficulty,
   }));
 }

@@ -22,6 +22,12 @@ const exportFormats = [
   ["json", "JSON (.json)"],
 ];
 
+const difficultyLabels = {
+  PRINCIPIANTE: "P",
+  ELITE: "F",
+  ALEATORIO: "D",
+};
+
 export default function QuestionReview({
   initialDocumentId = "",
   refreshKey = 0,
@@ -183,7 +189,7 @@ export default function QuestionReview({
               ) : (
                 <>
                   <div className="question-card-header">
-                    <span>{item.difficulty}</span>
+                    <span>{difficultyLabels[item.difficulty] || item.difficulty}</span>
                     <small>{new Date(item.created_at).toLocaleString("es-ES")}</small>
                   </div>
                   <h2>{item.question}</h2>
@@ -302,9 +308,9 @@ function QuestionEditor({ draft, onCancel, onChange, onSave }) {
             onChange={(event) => update("difficulty", event.target.value)}
             value={draft.difficulty}
           >
-            <option value="PRINCIPIANTE">Principiante</option>
-            <option value="ELITE">Élite</option>
-            <option value="ALEATORIO">Aleatorio</option>
+            <option value="PRINCIPIANTE">P — Principiante + Fácil</option>
+            <option value="ELITE">F — Fácil + Difícil</option>
+            <option value="ALEATORIO">D — Mezcla de todos</option>
           </select>
         </label>
       </div>
