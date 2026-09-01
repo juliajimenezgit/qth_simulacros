@@ -1,7 +1,11 @@
 import fs from "fs/promises";
 import { query, withTransaction } from "../db/pool.js";
 import { createEmbeddings, isOpenAiConfigured } from "./openaiService.js";
-import { extractPdfPages, splitIntoChunks } from "./pdfService.js";
+import {
+  extractDocumentDisplayTitle,
+  extractPdfPages,
+  splitIntoChunks,
+} from "./pdfService.js";
 import { toVectorLiteral } from "../utils/vector.js";
 import { HttpError } from "../utils/errors.js";
 import { normalizeFilename, normalizeUnicode } from "../utils/unicode.js";
@@ -22,6 +26,7 @@ export async function listDocuments(user) {
        d.id,
        d.filename,
        d.original_filename,
+       d.display_title,
        d.content_type,
        d.status,
        d.error_message,
@@ -78,6 +83,7 @@ export async function processDocument(documentId) {
     if (!document) return;
 
     const pages = await extractPdfPages(document.storage_path);
+    const displayTitle = extractDocumentDisplayTitle(pages, document.original_filename);
     const chunks = splitIntoChunks(pages);
 
     if (chunks.length === 0) {
@@ -108,9 +114,10 @@ export async function processDocument(documentId) {
 
       await client.query(
         `update documents
-         set status = 'AVAILABLE', processed_at = now(), error_message = null
+         set status = 'AVAILABLE', processed_at = now(), error_message = null,
+             display_title = $2
          where id = $1`,
-        [documentId],
+        [documentId, displayTitle],
       );
     });
   } catch (error) {

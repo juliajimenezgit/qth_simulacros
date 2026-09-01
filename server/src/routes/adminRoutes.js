@@ -25,7 +25,7 @@ const createUserSchema = z.object({
 const qualityInstructionSchema = z.object({
   title: z.string().trim().min(3).max(120),
   content: z.string().trim().min(20).max(4000),
-  difficulty: z.enum(["PRINCIPIANTE", "ELITE", "ALEATORIO"]).nullable(),
+  difficulty: z.enum(["PRINCIPIANTE", "FACIL", "DIFICIL"]).nullable(),
   active: z.boolean().default(true),
 });
 

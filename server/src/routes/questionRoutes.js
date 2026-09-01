@@ -16,6 +16,7 @@ const router = Router();
 router.use(requireAuth);
 
 const generateSchema = z.object({
+  testName: z.string().trim().max(120).optional(),
   selectedDocumentIds: z.array(z.string().uuid()).min(1).max(200),
   contentCounts: z.object({
     MANUAL: z.number().int().min(0).max(120),
@@ -50,7 +51,7 @@ const updateSchema = z.object({
   topic: z.string().min(1).optional(),
   chapter: z.string().min(1).optional(),
   reference: z.string().min(3).optional(),
-  difficulty: z.enum(["PRINCIPIANTE", "ELITE", "ALEATORIO"]).optional(),
+  difficulty: z.enum(["PRINCIPIANTE", "FACIL", "DIFICIL"]).optional(),
 });
 
 router.get(
@@ -62,10 +63,15 @@ router.get(
         throw new HttpError(400, "Temario no valido");
       }
     }
+    if (req.query.testId) {
+      const parsed = z.string().uuid().safeParse(req.query.testId);
+      if (!parsed.success) throw new HttpError(400, "Test no válido");
+    }
 
     res.json({
       questions: await listQuestions(req.user, {
         documentId: req.query.documentId,
+        testId: req.query.testId,
       }),
     });
   }),
@@ -83,12 +89,12 @@ router.post(
       );
     }
 
-    const questions = await generateConfiguredQuestions({
+    const result = await generateConfiguredQuestions({
       user: req.user,
       ...parsed.data,
     });
 
-    res.status(201).json({ questions });
+    res.status(201).json(result);
   }),
 );
 

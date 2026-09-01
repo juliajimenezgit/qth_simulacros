@@ -71,10 +71,12 @@ export const api = {
       method: "DELETE",
       body: JSON.stringify({ ids, all }),
     }),
-  questions: (documentId = "") =>
-    request(
-      `/api/questions${documentId ? `?documentId=${encodeURIComponent(documentId)}` : ""}`,
-    ),
+  questions: (documentId = "", testId = "") => {
+    const params = new URLSearchParams();
+    if (documentId) params.set("documentId", documentId);
+    if (testId) params.set("testId", testId);
+    return request(`/api/questions${params.size ? `?${params}` : ""}`);
+  },
   generateQuestions: (payload) =>
     request("/api/questions/generate", {
       method: "POST",

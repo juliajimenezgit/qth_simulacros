@@ -74,6 +74,7 @@ function docxDocumentXml(rows) {
   const body = [
     paragraphXml("Simulacro QTH", "Title"),
     ...rows.flatMap((row, index) => [
+      paragraphXml(`Test: ${row.Test}`),
       paragraphXml(`${index + 1}. ${row.Pregunta}`, "Heading1"),
       paragraphXml(`A. ${row["Opcion A"]}`),
       paragraphXml(`B. ${row["Opcion B"]}`),
@@ -178,6 +179,7 @@ function buildPdfBuffer(rows) {
 
   rows.forEach((row, index) => {
     const blocks = [
+      `Test: ${row.Test}`,
       `${index + 1}. ${row.Pregunta}`,
       `A. ${row["Opcion A"]}`,
       `B. ${row["Opcion B"]}`,

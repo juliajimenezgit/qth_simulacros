@@ -121,7 +121,7 @@ async function applyInstructions() {
         `${instruction.title}\nNivel: ${instruction.difficulty || "TODOS"}\n${instruction.content}`,
     ),
   );
-  const difficultyMap = { P: "PRINCIPIANTE", F: "ELITE", D: "ALEATORIO" };
+  const difficultyMap = { P: "PRINCIPIANTE", F: "FACIL", D: "DIFICIL" };
 
   await withTransaction(async (client) => {
     await client.query("delete from quality_instructions where title like $1", [

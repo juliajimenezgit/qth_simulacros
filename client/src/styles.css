@@ -502,6 +502,22 @@ textarea:focus {
   margin: 0;
 }
 
+.test-name-dialog label {
+  margin-top: 24px;
+}
+
+.test-name-dialog label small {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.dialog-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 22px;
+}
+
 .dialog-heading h2 {
   color: var(--black);
   font-size: 1.3rem;
@@ -884,6 +900,16 @@ td small {
   gap: 16px;
 }
 
+.generation-success {
+  background: #eefaf4;
+  border: 1px solid #bce3cf;
+  border-left: 5px solid var(--success);
+  border-radius: 8px;
+  color: var(--success);
+  line-height: 1.5;
+  padding: 16px 18px;
+}
+
 .flow-panel {
   background: #ffffff;
   border: 1px solid var(--line);
@@ -1026,6 +1052,21 @@ td small {
   font-size: 0.78rem;
   font-weight: 700;
   padding: 5px 9px;
+}
+
+.question-card-header > div {
+  align-items: center;
+  display: flex;
+  gap: 9px;
+  min-width: 0;
+}
+
+.question-card-header .test-name {
+  color: var(--muted);
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .question-card-header small,
@@ -1240,6 +1281,10 @@ td small {
   .editor-actions {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .dialog-actions {
+    flex-direction: column-reverse;
   }
 
   .stats-grid,

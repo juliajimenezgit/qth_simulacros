@@ -16,7 +16,7 @@ begin
   end if;
 
   if not exists (select 1 from pg_type where typname = 'question_difficulty') then
-    create type question_difficulty as enum ('PRINCIPIANTE', 'ELITE', 'ALEATORIO');
+    create type question_difficulty as enum ('PRINCIPIANTE', 'FACIL', 'DIFICIL');
   end if;
 end $$;
 
@@ -35,6 +35,7 @@ create table if not exists documents (
   user_id uuid not null references users(id) on delete cascade,
   filename text not null,
   original_filename text not null,
+  display_title text,
   storage_path text not null,
   content_type document_content_type not null default 'MANUAL',
   status document_status not null default 'PROCESSING',
@@ -53,10 +54,23 @@ create table if not exists document_chunks (
   created_at timestamptz not null default now()
 );
 
+create table if not exists question_sets (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references users(id) on delete cascade,
+  name text not null,
+  requested_count integer not null,
+  generated_count integer not null default 0,
+  status text not null default 'GENERATING' check (status in ('GENERATING', 'COMPLETED', 'ERROR')),
+  error_message text,
+  created_at timestamptz not null default now(),
+  completed_at timestamptz
+);
+
 create table if not exists questions (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references users(id) on delete cascade,
   document_id uuid not null references documents(id) on delete cascade,
+  question_set_id uuid references question_sets(id) on delete set null,
   source_chunk_id uuid references document_chunks(id) on delete set null,
   question text not null,
   option_a text not null,
@@ -124,6 +138,7 @@ create index if not exists documents_user_id_idx on documents(user_id);
 create index if not exists document_chunks_document_id_idx on document_chunks(document_id);
 create index if not exists questions_user_id_idx on questions(user_id);
 create index if not exists questions_document_id_idx on questions(document_id);
+create index if not exists questions_question_set_id_idx on questions(question_set_id);
 create index if not exists quality_instructions_active_idx on quality_instructions(active);
 create index if not exists quality_knowledge_source_idx on quality_knowledge_chunks(source_type);
 create index if not exists activity_logs_created_at_idx on activity_logs(created_at desc);

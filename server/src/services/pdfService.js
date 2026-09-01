@@ -54,6 +54,63 @@ export function splitIntoChunks(pages, maxChars = 2200, overlap = 260) {
   return chunks;
 }
 
+export function extractDocumentDisplayTitle(pages, filename) {
+  const firstPageLines = (pages[0]?.text || "")
+    .split("\n")
+    .map((line) => normalizeUnicode(line).trim())
+    .filter(Boolean);
+  const titleLines = [];
+
+  for (const line of firstPageLines.slice(0, 12)) {
+    if (/ceis\s+guadalajara|parte\s+\d+/i.test(line)) break;
+    const letters = line.replace(/[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/g, "");
+    const uppercase = letters.replace(/[^A-ZÁÉÍÓÚÜÑ]/g, "").length;
+    if (letters.length >= 3 && uppercase / letters.length >= 0.75 && line.length <= 80) {
+      titleLines.push(line);
+      if (titleLines.join(" ").length >= 12 && !/\b(DE|DEL|Y)$/i.test(line)) break;
+    } else if (titleLines.length > 0) {
+      break;
+    }
+  }
+
+  const extracted = titleLines.join(" ").replace(/\s+/g, " ").trim();
+  return toSpanishTitle(extracted || fallbackTitleFromFilename(filename));
+}
+
+function fallbackTitleFromFilename(filename) {
+  const manualTitles = {
+    M1: "Incendios",
+    M2: "Rescate y salvamento",
+    M3: "Riesgos tecnológicos y asistencias técnicas",
+    M4: "Intervenciones sanitarias en emergencias",
+    M5: "Acondicionamiento físico y socorrismo",
+    M6: "Equipos operativos y herramientas de intervención",
+    M7: "Formación del mando intermedio",
+  };
+  const manualCode = String(filename).match(/^(M\d+)/i)?.[1]?.toUpperCase();
+  if (/-00-completo\.pdf$/i.test(filename) && manualTitles[manualCode]) {
+    return manualTitles[manualCode];
+  }
+  return String(filename)
+    .replace(/\.pdf$/i, "")
+    .replace(/^.*-\d{2}-/, "")
+    .replace(/([a-záéíóúüñ])([A-ZÁÉÍÓÚÜÑ])/g, "$1 $2")
+    .replace(/[-_]+/g, " ");
+}
+
+function toSpanishTitle(value) {
+  const lowercaseWords = new Set(["a", "de", "del", "el", "en", "la", "las", "los", "y"]);
+  return value
+    .toLocaleLowerCase("es-ES")
+    .split(/\s+/)
+    .map((word, index) =>
+      index > 0 && lowercaseWords.has(word)
+        ? word
+        : `${word.charAt(0).toLocaleUpperCase("es-ES")}${word.slice(1)}`,
+    )
+    .join(" ");
+}
+
 function renderLines(items) {
   const lines = [];
   let currentLine = null;

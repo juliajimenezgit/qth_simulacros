@@ -20,6 +20,24 @@ import {
 
 const EMBEDDING_BATCH_SIZE = 64;
 
+function normalizeDifficulty(value) {
+  const normalized = String(value || "")
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .trim()
+    .toUpperCase();
+  return {
+    P: "PRINCIPIANTE",
+    PRINCIPIANTE: "PRINCIPIANTE",
+    F: "FACIL",
+    FACIL: "FACIL",
+    ELITE: "FACIL",
+    D: "DIFICIL",
+    DIFICIL: "DIFICIL",
+    ALEATORIO: "DIFICIL",
+  }[normalized] || normalized;
+}
+
 const generatedQuestionSchema = z.object({
   questions: z.array(
     z.object({
@@ -34,7 +52,10 @@ const generatedQuestionSchema = z.object({
       topic: z.string().min(1),
       chapter: z.string().min(1),
       reference: z.string().min(3),
-      difficulty: z.enum(["PRINCIPIANTE", "ELITE", "ALEATORIO"]),
+      difficulty: z.preprocess(
+        normalizeDifficulty,
+        z.enum(["PRINCIPIANTE", "FACIL", "DIFICIL"]),
+      ),
       source_chunk_id: z.string().uuid().optional(),
     }),
   ),
@@ -53,16 +74,23 @@ export async function listQuestions(user, filters = {}) {
     params.push(filters.documentId);
     clauses.push(`q.document_id = $${params.length}`);
   }
+  if (filters.testId) {
+    params.push(filters.testId);
+    clauses.push(`q.question_set_id = $${params.length}`);
+  }
 
   const where = clauses.length ? `where ${clauses.join(" and ")}` : "";
   const { rows } = await query(
     `select
        q.*,
        d.original_filename,
+       d.display_title,
        d.content_type,
+       qs.name as test_name,
        u.name as owner_name
      from questions q
      join documents d on d.id = q.document_id
+     left join question_sets qs on qs.id = q.question_set_id
      join users u on u.id = q.user_id
      ${where}
      order by q.created_at desc`,
@@ -75,6 +103,7 @@ export async function listQuestions(user, filters = {}) {
 function applyDocumentHierarchy(row) {
   const originalFilename = normalizeFilename(row.original_filename);
   const manualFilename = resolveManualFilename(originalFilename);
+  const sourceLabel = formatCeisSourceLabel(row.display_title, originalFilename);
   let topic = row.topic || "No identificado";
   let chapter = row.chapter || "No identificado";
 
@@ -86,14 +115,17 @@ function applyDocumentHierarchy(row) {
   }
 
   const normalizedQuestion = stripSourcePrefix(
-    normalizeUnicode(row.question).trim(),
-    row.source_title,
+    stripSourcePrefix(normalizeUnicode(row.question).trim(), row.source_title),
+    manualFilename,
   );
-  const question = normalizedQuestion
+  const cleanQuestion = stripLegacyCeisPrefix(
+    stripSourcePrefix(normalizedQuestion, row.source_title),
+  );
+  const question = cleanQuestion
     .toLocaleLowerCase("es-ES")
-    .startsWith(manualFilename.toLocaleLowerCase("es-ES"))
-    ? normalizedQuestion
-    : `${manualFilename}. ${normalizedQuestion}`;
+    .startsWith(sourceLabel.toLocaleLowerCase("es-ES"))
+    ? cleanQuestion
+    : `${sourceLabel}. ${cleanQuestion}`;
 
   return {
     ...row,
@@ -104,12 +136,60 @@ function applyDocumentHierarchy(row) {
   };
 }
 
+function formatCeisSourceLabel(displayTitle, originalFilename) {
+  const title = normalizeUnicode(displayTitle || "")
+    .trim()
+    .replace(/[.;:]+$/u, "");
+  const fallback = normalizeFilename(originalFilename)
+    .replace(/\.pdf$/i, "")
+    .replace(/^.*-\d{2}-/, "")
+    .replace(/([a-záéíóúüñ])([A-ZÁÉÍÓÚÜÑ])/g, "$1 $2")
+    .replace(/[-_]+/g, " ")
+    .trim();
+  const readable = title || fallback;
+  const normalized = readable
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLocaleLowerCase("es-ES")
+    .replace(/\s+/g, " ")
+    .trim();
+  const canonicalTitles = [
+    [/urgencias traumaticas/, "Urgencias Traumáticas"],
+    [/mecanica.*conduccion.*4x4|vehiculos.*mecanica/, "Mecánica y Conducción 4x4"],
+    [/incendios de vegetacion|vegetacion/, "Incendios de Vegetación"],
+    [/soporte vital/, "Soporte Vital"],
+    [/teoria del fuego|teoriafuego/, "Teoría del Fuego"],
+    [/riesgo electrico/, "Riesgo Eléctrico"],
+    [/\bnrbq\b/, "NRBQ"],
+    [/hidraulica/, "Hidráulica"],
+    [/incendios estructurales/, "Incendios Estructurales"],
+    [/proteccion respiratoria|epis.*vias respiratorias/, "EPIs Vías Respiratorias"],
+    [/bombas centrifugas/, "Bombas Centrífugas"],
+    [/edificaciones/, "Edificaciones"],
+    [/urgencias medicas/, "Urgencias Médicas"],
+  ];
+  const canonical = canonicalTitles.find(([pattern]) => pattern.test(normalized));
+  const baseTitle = canonical?.[1] || readable
+    .replace(/\s+(?:del\s+)?CEIS(?:\s+(?:de\s+)?Guadalajara)?$/i, "")
+    .trim();
+  return `${baseTitle} del CEIS Guadalajara`;
+}
+
 function stripSourcePrefix(question, previousTitle) {
   const title = normalizeUnicode(previousTitle || "").trim().replace(/[.?!:;]+$/u, "");
   if (!title || !question.toLocaleLowerCase("es-ES").startsWith(title.toLocaleLowerCase("es-ES"))) {
     return question;
   }
   return question.slice(title.length).replace(/^[.?!:;\s-]+/u, "").trim();
+}
+
+function stripLegacyCeisPrefix(question) {
+  return question
+    .replace(
+      /^[^?\n]{2,100}\s+(?:del\s+CEIS\s+Guadalajara|CEIS)[.;]\s+/iu,
+      "",
+    )
+    .trim();
 }
 
 function resolveManualFilename(originalFilename) {
@@ -124,7 +204,7 @@ function resolveManualFilename(originalFilename) {
   return inferred === originalFilename ? originalFilename : inferred;
 }
 
-export async function generateQuestions({ user, documentId, count, difficulty }) {
+export async function generateQuestions({ user, documentId, count, difficulty, testId }) {
   const document = await assertDocumentAccess(documentId, user);
   if (!document) {
     throw new HttpError(404, "Temario no encontrado");
@@ -166,6 +246,7 @@ export async function generateQuestions({ user, documentId, count, difficulty })
     const raw = await createChatJson(
       buildPrompt({
         document,
+        testId,
         contextChunks,
         count: batchSize,
         difficulty,
@@ -173,7 +254,7 @@ export async function generateQuestions({ user, documentId, count, difficulty })
         qualityInstructions,
         privateQualityKnowledge,
       }),
-      difficulty === "ELITE" ? 0.35 : 0.2,
+      difficulty === "DIFICIL" ? 0.35 : 0.2,
     );
     const parsed = generatedQuestionSchema.parse(parseModelJson(raw));
 
@@ -185,6 +266,7 @@ export async function generateQuestions({ user, documentId, count, difficulty })
         question,
         sourceChunk,
         document,
+        testId,
         userId: user.id,
         documentId,
       });
@@ -213,6 +295,7 @@ export async function generateConfiguredQuestions({
   selectedDocumentIds,
   contentCounts,
   difficultyCounts,
+  testName,
 }) {
   const uniqueDocumentIds = [...new Set(selectedDocumentIds)];
   const params = [uniqueDocumentIds];
@@ -252,8 +335,8 @@ export async function generateConfiguredQuestions({
 
   const difficultyMap = {
     P: "PRINCIPIANTE",
-    F: "ELITE",
-    D: "ALEATORIO",
+    F: "FACIL",
+    D: "DIFICIL",
   };
   const remainingDifficulty = Object.entries(difficultyCounts).map(
     ([difficulty, count]) => ({ difficulty: difficultyMap[difficulty], count }),
@@ -271,27 +354,54 @@ export async function generateConfiguredQuestions({
     }
   }
 
+  const requestedCount = Object.values(contentCounts).reduce((sum, count) => sum + count, 0);
+  const automaticName = `Simulacro ${new Intl.DateTimeFormat("es-ES", {
+    dateStyle: "short",
+    timeStyle: "short",
+    timeZone: "Europe/Madrid",
+  }).format(new Date())}`;
+  const { rows: testRows } = await query(
+    `insert into question_sets (user_id, name, requested_count)
+     values ($1, $2, $3)
+     returning *`,
+    [user.id, normalizeUnicode(testName || automaticName), requestedCount],
+  );
+  const test = testRows[0];
   const saved = [];
-  for (const job of jobs) {
-    const matchingDocuments = documentsByType[job.contentType];
-    const baseCount = Math.floor(job.count / matchingDocuments.length);
-    const extra = job.count % matchingDocuments.length;
+  try {
+    for (const job of jobs) {
+      const matchingDocuments = documentsByType[job.contentType];
+      const baseCount = Math.floor(job.count / matchingDocuments.length);
+      const extra = job.count % matchingDocuments.length;
 
-    for (const [index, document] of matchingDocuments.entries()) {
-      const count = baseCount + (index < extra ? 1 : 0);
-      if (count === 0) continue;
-      saved.push(
-        ...(await generateQuestions({
-          user,
-          documentId: document.id,
-          count,
-          difficulty: job.difficulty,
-        })),
-      );
+      for (const [index, document] of matchingDocuments.entries()) {
+        const count = baseCount + (index < extra ? 1 : 0);
+        if (count === 0) continue;
+        saved.push(
+          ...(await generateQuestions({
+            user,
+            documentId: document.id,
+            count,
+            difficulty: job.difficulty,
+            testId: test.id,
+          })),
+        );
+      }
     }
+    const { rows } = await query(
+      `update question_sets
+       set status = 'COMPLETED', generated_count = $2, completed_at = now()
+       where id = $1 returning *`,
+      [test.id, saved.length],
+    );
+    return { questions: saved, test: rows[0] };
+  } catch (error) {
+    await query(
+      `update question_sets set status = 'ERROR', error_message = $2 where id = $1`,
+      [test.id, normalizeUnicode(error.message || "Error generando el test")],
+    );
+    throw error;
   }
-
-  return saved;
 }
 
 function buildBatches(count) {
@@ -428,11 +538,11 @@ function buildPrompt({
 }) {
   const levelInstructions = {
     PRINCIPIANTE:
-      "Nivel P: combina preguntas principiantes y faciles. Deben ser directas, claras y centradas en conceptos fundamentales o contenido literal.",
-    ELITE:
-      "Nivel F: combina preguntas faciles y dificiles, alternando cuestiones directas con otras exigentes y distractores plausibles.",
-    ALEATORIO:
-      "Nivel D: mezcla todos los grados, incluyendo preguntas principiantes, faciles y dificiles, con especial presencia de detalles exigentes.",
+      "Nivel P (Principiante): preguntas directas, claras y centradas en conceptos fundamentales, títulos, definiciones básicas o contenido literal.",
+    FACIL:
+      "Nivel F (Fácil/intermedio): exige mayor dominio, comprensión y memorización precisa, con distractores plausibles y relativamente parecidos.",
+    DIFICIL:
+      "Nivel D (Difícil): exige detalles, relaciones entre conceptos, aplicación práctica o cálculos, con distractores muy plausibles sin ambigüedad.",
   };
 
   const context = contextChunks
@@ -500,7 +610,7 @@ Devuelve exactamente este formato:
       "topic": "Tema exacto al que pertenece el contenido",
       "chapter": "Capitulo exacto al que pertenece el contenido",
       "reference": "Nombre PDF - pagina X - apartado Y si existe",
-      "difficulty": "PRINCIPIANTE|ELITE|ALEATORIO",
+      "difficulty": "PRINCIPIANTE|FACIL|DIFICIL (sin tildes)",
       "source_chunk_id": "uuid del fragmento usado"
     }
   ]
@@ -509,9 +619,10 @@ Devuelve exactamente este formato:
   ];
 }
 
-async function saveIfUnique({ question, sourceChunk, document, userId, documentId }) {
+async function saveIfUnique({ question, sourceChunk, document, testId, userId, documentId }) {
   const originalFilename = normalizeFilename(document.original_filename);
   const sourceTitle = resolveManualFilename(originalFilename);
+  const sourceLabel = formatCeisSourceLabel(document.display_title, originalFilename);
   const topic =
     document.content_type === "TEMA"
       ? originalFilename
@@ -523,14 +634,17 @@ async function saveIfUnique({ question, sourceChunk, document, userId, documentI
         ? originalFilename
         : normalizeUnicode(question.chapter || "No identificado");
   const normalizedQuestion = stripSourcePrefix(
-    normalizeUnicode(question.question).trim(),
-    question.source_title,
+    stripSourcePrefix(normalizeUnicode(question.question).trim(), question.source_title),
+    sourceTitle,
   );
-  const prefixedQuestion = normalizedQuestion
+  const cleanQuestion = stripLegacyCeisPrefix(
+    stripSourcePrefix(normalizedQuestion, question.source_title),
+  );
+  const prefixedQuestion = cleanQuestion
     .toLocaleLowerCase("es-ES")
-    .startsWith(sourceTitle.toLocaleLowerCase("es-ES"))
-    ? normalizedQuestion
-    : `${sourceTitle}. ${normalizedQuestion}`;
+    .startsWith(sourceLabel.toLocaleLowerCase("es-ES"))
+    ? cleanQuestion
+    : `${sourceLabel}. ${cleanQuestion}`;
   const embedding = await createEmbedding(
     `${prefixedQuestion}\n${question.option_a}\n${question.option_b}\n${question.option_c}\n${question.option_d}`,
   );
@@ -556,6 +670,7 @@ async function saveIfUnique({ question, sourceChunk, document, userId, documentI
     `insert into questions (
        user_id,
        document_id,
+       question_set_id,
        source_chunk_id,
        question,
        option_a,
@@ -571,11 +686,12 @@ async function saveIfUnique({ question, sourceChunk, document, userId, documentI
        difficulty,
        embedding
      )
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::vector)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::vector)
      returning *`,
     [
       userId,
       documentId,
+      testId || null,
       sourceChunk?.id || null,
       prefixedQuestion,
       normalizeUnicode(question.option_a),
@@ -681,6 +797,7 @@ export async function exportQuestionsRows(user, documentId) {
   }
 
   return questions.map((item) => ({
+    Test: item.test_name || "Sin test asignado",
     Pregunta: item.question,
     "Opcion A": item.option_a,
     "Opcion B": item.option_b,
@@ -694,8 +811,8 @@ export async function exportQuestionsRows(user, documentId) {
     Referencia: item.reference,
     Nivel: {
       PRINCIPIANTE: "P",
-      ELITE: "F",
-      ALEATORIO: "D",
+      FACIL: "F",
+      DIFICIL: "D",
     }[item.difficulty] || item.difficulty,
   }));
 }

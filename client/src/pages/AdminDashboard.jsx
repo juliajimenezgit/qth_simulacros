@@ -252,8 +252,8 @@ export default function AdminDashboard() {
             >
               <option value="">Todos los niveles</option>
               <option value="PRINCIPIANTE">Principiante</option>
-              <option value="ELITE">Élite</option>
-              <option value="ALEATORIO">Aleatorio</option>
+              <option value="FACIL">Fácil</option>
+              <option value="DIFICIL">Difícil</option>
             </select>
           </label>
           <button className="primary-button" type="submit">

@@ -27,12 +27,13 @@ const exportFormats = [
 
 const difficultyLabels = {
   PRINCIPIANTE: "P",
-  ELITE: "F",
-  ALEATORIO: "D",
+  FACIL: "F",
+  DIFICIL: "D",
 };
 
 export default function QuestionReview({
   initialDocumentId = "",
+  initialTestId = "",
   refreshKey = 0,
   showHeader = true,
 }) {
@@ -58,7 +59,7 @@ export default function QuestionReview({
     try {
       const [docData, questionData] = await Promise.all([
         api.documents(),
-        api.questions(documentId),
+        api.questions(documentId, initialTestId),
       ]);
       setDocuments(docData.documents);
       setQuestions(questionData.questions);
@@ -69,7 +70,7 @@ export default function QuestionReview({
 
   useEffect(() => {
     load();
-  }, [documentId, refreshKey]);
+  }, [documentId, initialTestId, refreshKey]);
 
   function startEdit(question) {
     setEditingId(question.id);
@@ -195,7 +196,10 @@ export default function QuestionReview({
               ) : (
                 <>
                   <div className="question-card-header">
-                    <span>{difficultyLabels[item.difficulty] || item.difficulty}</span>
+                    <div>
+                      <span>{difficultyLabels[item.difficulty] || item.difficulty}</span>
+                      <strong className="test-name">{item.test_name || "Sin test asignado"}</strong>
+                    </div>
                     <small>{new Date(item.created_at).toLocaleString("es-ES")}</small>
                   </div>
                   <h2>{item.question}</h2>
@@ -333,9 +337,9 @@ function QuestionEditor({ draft, onCancel, onChange, onSave }) {
             onChange={(event) => update("difficulty", event.target.value)}
             value={draft.difficulty}
           >
-            <option value="PRINCIPIANTE">P — Principiante + Fácil</option>
-            <option value="ELITE">F — Fácil + Difícil</option>
-            <option value="ALEATORIO">D — Mezcla de todos</option>
+            <option value="PRINCIPIANTE">P — Principiante</option>
+            <option value="FACIL">F — Fácil</option>
+            <option value="DIFICIL">D — Difícil</option>
           </select>
         </label>
       </div>

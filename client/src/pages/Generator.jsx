@@ -18,6 +18,9 @@ export default function Generator() {
   const [generatorOpen, setGeneratorOpen] = useState(true);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewRefreshKey, setReviewRefreshKey] = useState(0);
+  const [showNameDialog, setShowNameDialog] = useState(false);
+  const [testName, setTestName] = useState("");
+  const [currentTest, setCurrentTest] = useState(null);
 
   const availableDocuments = useMemo(
     () => documents.filter((document) => document.status === "AVAILABLE"),
@@ -116,8 +119,8 @@ export default function Generator() {
     setDifficultyCounts(nextCounts);
   }
 
-  async function generate(event) {
-    event.preventDefault();
+  async function generate() {
+    setShowNameDialog(false);
     setLoading(true);
     setError("");
     setMessage("");
@@ -127,8 +130,12 @@ export default function Generator() {
         selectedDocumentIds,
         contentCounts,
         difficultyCounts,
+        testName: testName.trim() || undefined,
       });
-      setMessage(`${data.questions.length} preguntas guardadas.`);
+      setCurrentTest(data.test);
+      setMessage(
+        `¡Enhorabuena! Se han generado ${data.questions.length} preguntas para “${data.test.name}”. Ya puedes revisarlas.`,
+      );
       setReviewRefreshKey(Date.now());
       setGeneratorOpen(false);
       setReviewOpen(true);
@@ -165,7 +172,13 @@ export default function Generator() {
           </button>
 
           {generatorOpen && (
-            <form className="tool-panel embedded-panel" onSubmit={generate}>
+            <form
+              className="tool-panel embedded-panel"
+              onSubmit={(event) => {
+                event.preventDefault();
+                setShowNameDialog(true);
+              }}
+            >
               <section className="distribution-section">
                 <div className="distribution-heading">
                   <div>
@@ -251,9 +264,9 @@ export default function Generator() {
                 </div>
                 <div className="count-grid difficulty-counts">
                   {[
-                    ["P", "P", "Principiante + Fácil"],
-                    ["F", "F", "Fácil + Difícil"],
-                    ["D", "D", "Mezcla de todos los niveles"],
+                    ["P", "P", "Principiante"],
+                    ["F", "F", "Fácil"],
+                    ["D", "D", "Difícil"],
                   ].map(([key, label, detail]) => (
                     <label key={key}>
                       <span className={`difficulty-letter difficulty-${key}`}>{label}</span>
@@ -321,8 +334,6 @@ export default function Generator() {
               </button>
 
               {error && <p className="form-error">{error}</p>}
-              {message && <p className="form-success">{message}</p>}
-
               <button
                 className="primary-button large-button"
                 disabled={loading || !totalsMatch}
@@ -335,6 +346,12 @@ export default function Generator() {
           )}
         </section>
 
+        {message && (
+          <div className="generation-success">
+            <strong>{message}</strong>
+          </div>
+        )}
+
         <section className="flow-panel">
           <button
             className="flow-panel-toggle"
@@ -346,14 +363,15 @@ export default function Generator() {
               Revisar preguntas
             </span>
             <strong>
-              {message ? "Listo para revisar" : "Banco completo disponible"}
+              {currentTest ? currentTest.name : "Genera un test para revisarlo"}
             </strong>
           </button>
 
-          {reviewOpen && (
+          {reviewOpen && currentTest && (
             <div className="review-panel">
               <QuestionReview
                 initialDocumentId=""
+                initialTestId={currentTest.id}
                 refreshKey={reviewRefreshKey}
                 showHeader={false}
               />
@@ -361,6 +379,50 @@ export default function Generator() {
           )}
         </section>
       </div>
+
+      {showNameDialog && (
+        <div
+          aria-labelledby="test-name-dialog-title"
+          aria-modal="true"
+          className="modal-backdrop"
+          onClick={() => setShowNameDialog(false)}
+          role="dialog"
+        >
+          <div className="upload-dialog test-name-dialog" onClick={(event) => event.stopPropagation()}>
+            <div className="dialog-heading">
+              <span className="dialog-icon"><Play size={22} /></span>
+              <div>
+                <h2 id="test-name-dialog-title">Ponle un nombre al test</h2>
+                <p>Así podrás localizar sus preguntas fácilmente más adelante.</p>
+              </div>
+            </div>
+            <label>
+              Nombre del test (opcional)
+              <input
+                autoFocus
+                maxLength="120"
+                onChange={(event) => setTestName(event.target.value)}
+                placeholder="Ej. Simulacro hidráulica — septiembre"
+                value={testName}
+              />
+              <small>Si lo dejas vacío, se asignará automáticamente la fecha y la hora.</small>
+            </label>
+            <div className="dialog-actions">
+              <button
+                className="secondary-button"
+                onClick={() => setShowNameDialog(false)}
+                type="button"
+              >
+                Cancelar
+              </button>
+              <button className="primary-button" onClick={generate} type="button">
+                <Play size={18} />
+                Generar preguntas
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
