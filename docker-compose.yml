@@ -1,0 +1,18 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: qth-simulacros-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: qth_simulacros
+      POSTGRES_USER: qth
+      POSTGRES_PASSWORD: qth_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - qth_postgres_data:/var/lib/postgresql/data
+      # Si quieres volver a crear el docker, elimina la linea de debajo
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+volumes:
+  qth_postgres_data:

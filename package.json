@@ -1,0 +1,20 @@
+{
+  "name": "qth-simulacros",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Plataforma interna para generar simulacros tipo test con RAG para QTH Sutan.",
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "dev": "npm-run-all --parallel dev:server dev:client",
+    "dev:server": "npm --workspace server run dev",
+    "dev:client": "npm --workspace client run dev",
+    "db:init": "psql \"$DATABASE_URL\" -f database/init.sql",
+    "lint": "npm --workspace server run lint && npm --workspace client run lint"
+  },
+  "devDependencies": {
+    "npm-run-all": "^4.1.5"
+  }
+}

@@ -1,0 +1,13 @@
+node_modules
+.env
+.env.local
+dist
+coverage
+server/storage/pdfs/*
+!server/storage/pdfs/.gitkeep
+*.log
+.DS_Store
+._*
+
+# Biblioteca local de manuales; no forma parte del código de la aplicación.
+temario/
