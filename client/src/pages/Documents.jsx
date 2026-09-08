@@ -15,6 +15,8 @@ export default function Documents() {
   const [showUploadDialog, setShowUploadDialog] = useState(false);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState({ completed: 0, total: 0 });
+  const [uploadResult, setUploadResult] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [error, setError] = useState("");
@@ -71,20 +73,32 @@ export default function Documents() {
     fileInputRef.current.click();
   }
 
-  async function upload(file) {
+  async function upload(fileList) {
+    const files = Array.from(fileList || []);
     const contentType = selectedContentTypeRef.current;
-    if (!file || !contentType) return;
+    if (files.length === 0 || !contentType || uploading) return;
     setUploading(true);
+    setUploadProgress({ completed: 0, total: files.length });
+    setUploadResult(null);
     setError("");
+    const failures = [];
+    let succeeded = 0;
     try {
-      await api.uploadDocument(file, contentType);
-      await loadDocuments();
-    } catch (err) {
-      setError(err.message);
+      for (const [index, file] of files.entries()) {
+        try {
+          await api.uploadDocument(file, contentType);
+          succeeded += 1;
+        } catch (err) {
+          failures.push({ name: file.name, message: err.message });
+        }
+        setUploadProgress({ completed: index + 1, total: files.length });
+      }
+      setUploadResult({ succeeded, total: files.length, failures });
       await loadDocuments();
     } finally {
       setUploading(false);
       selectedContentTypeRef.current = "";
+      fileInputRef.current.value = "";
     }
   }
 
@@ -195,17 +209,39 @@ export default function Documents() {
           type="button"
         >
           <FileUp size={19} />
-          {uploading ? "Subiendo PDF..." : "Subir PDF"}
+          {uploading ? "Subiendo PDFs..." : "Subir PDFs"}
         </button>
         <input
           accept="application/pdf"
           className="visually-hidden-file"
-          onChange={(event) => upload(event.target.files[0] || null)}
+          multiple
+          onChange={(event) => upload(event.target.files)}
           ref={fileInputRef}
           tabIndex="-1"
           type="file"
         />
       </div>
+
+      {uploading && (
+        <p role="status">
+          Subida en curso: {uploadProgress.completed} de {uploadProgress.total} archivos completados.
+        </p>
+      )}
+      {uploadResult && (
+        <div role="status">
+          <p>Se han subido {uploadResult.succeeded} de {uploadResult.total} PDFs.</p>
+          {uploadResult.failures.length > 0 && (
+            <>
+              <p className="form-error">No se han podido subir los siguientes archivos. Puedes volver a seleccionarlos para reintentarlo:</p>
+              <ul>
+                {uploadResult.failures.map((failure, index) => (
+                  <li key={index}>{failure.name}: {failure.message}</li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+      )}
 
       {showUploadDialog && (
         <div
@@ -228,7 +264,7 @@ export default function Documents() {
               <span className="dialog-icon"><FileUp size={22} /></span>
               <div>
                 <h2 id="upload-dialog-title">¿Qué tipo de contenido vas a subir?</h2>
-                <p>Selecciona una categoría para continuar con el PDF.</p>
+                <p>Puedes seleccionar varios PDFs a la vez. La categoría elegida se aplicará a todos ellos.</p>
               </div>
             </div>
             <div className="content-type-options">
