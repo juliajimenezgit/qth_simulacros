@@ -1,4 +1,5 @@
 import { useState } from "react";
+import AppFooter from "../components/AppFooter.jsx";
 
 export default function Login({ onLogin }) {
   const [email, setEmail] = useState("");
@@ -59,6 +60,7 @@ export default function Login({ onLogin }) {
           </button>
         </form>
       </section>
+      <AppFooter />
     </main>
   );
 }

@@ -1,6 +1,16 @@
 import fs from "fs/promises";
 import pdfParse from "pdf-parse";
-import { normalizeUnicode } from "../utils/unicode.js";
+import { normalizeFilename, normalizeUnicode } from "../utils/unicode.js";
+
+const manualTitles = {
+    M1: "Incendios",
+    M2: "Rescate y salvamento",
+    M3: "Riesgos tecnológicos y asistencias técnicas",
+    M4: "Intervenciones sanitarias en emergencias",
+    M5: "Acondicionamiento físico y socorrismo",
+    M6: "Equipos operativos y herramientas de intervención",
+    M7: "Formación del mando intermedio",
+  };
 
 const LINE_Y_TOLERANCE = 4;
 const LINE_X_RESET_TOLERANCE = 18;
@@ -55,6 +65,10 @@ export function splitIntoChunks(pages, maxChars = 2200, overlap = 260) {
 }
 
 export function extractDocumentDisplayTitle(pages, filename) {
+  const chapterTitle = chapterTitleFromFilename(filename);
+  if (chapterTitle) return chapterTitle;
+  const manualCode = normalizeFilename(filename).match(/^(M\d+).*[-_]00[-_]completo\.pdf$/i)?.[1]?.toUpperCase();
+  if (manualTitles[manualCode]) return manualTitles[manualCode];
   const firstPageLines = (pages[0]?.text || "")
     .split("\n")
     .map((line) => normalizeUnicode(line).trim())
@@ -62,31 +76,66 @@ export function extractDocumentDisplayTitle(pages, filename) {
   const titleLines = [];
 
   for (const line of firstPageLines.slice(0, 12)) {
-    if (/ceis\s+guadalajara|parte\s+\d+/i.test(line)) break;
+    if (/ceis\s+guadalajara|parte\s+\d+|^(?:autores|colaboradores|[ií]ndice|cr[eé]ditos|bibliograf[ií]a)\b/i.test(line)) break;
     const letters = line.replace(/[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/g, "");
     const uppercase = letters.replace(/[^A-ZÁÉÍÓÚÜÑ]/g, "").length;
     if (letters.length >= 3 && uppercase / letters.length >= 0.75 && line.length <= 80) {
       titleLines.push(line);
-      if (titleLines.join(" ").length >= 12 && !/\b(DE|DEL|Y)$/i.test(line)) break;
+      // A cover title can span several lines, even after a complete phrase.
+      // Stop at the end of the heading block, not at an arbitrary character count.
     } else if (titleLines.length > 0) {
       break;
     }
   }
 
   const extracted = titleLines.join(" ").replace(/\s+/g, " ").trim();
-  return toSpanishTitle(extracted || fallbackTitleFromFilename(filename));
+  const genericTitle = /^(cap[ií]tulo|tema|manual)(?:\s+[\divxlcdm]+)?[.:]?$/i.test(extracted);
+  return toSpanishTitle((!genericTitle && extracted) || fallbackTitleFromFilename(filename));
+}
+
+export function chapterTitleFromFilename(filename) {
+  const stem = normalizeFilename(filename).replace(/\.pdf$/i, "");
+  const match = stem.match(/^(.*?)[-_ ]cap(?:[ií]tulo)?[-_ ]*(\d+)$/i);
+  if (!match) return null;
+
+  const topic = match[1]
+    .replace(/^(?:\d+-)?m\d+[-_].*?[-_]v\d+(?:[.]\d+)*[-_]\d+[-_]/i, "")
+    .replace(/([a-záéíóúüñ])([A-ZÁÉÍÓÚÜÑ])/g, "$1 $2")
+    .replace(/([A-ZÁÉÍÓÚÜÑ]+)([A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ])/g, "$1 $2")
+    .replace(/[-_]+/g, " ")
+    .trim();
+  if (!topic) return null;
+
+  // These filenames abbreviate the topic and omit its accents/prepositions.
+  const topicTitles = {
+    teoriafuego: "Teoría del Fuego",
+    teoriadelfuego: "Teoría del Fuego",
+    hidraulica: "Hidráulica",
+    equiposepivestuario: "Equipos EPI Vestuario",
+  };
+  const key = withoutDiacritics(topic).toLowerCase().replace(/\s+/g, "");
+  const title = topicTitles[key] || toSpanishTitle(topic).replace(/\bEpi\b/g, "EPI");
+  return `Capítulo ${Number(match[2])} ${title}`;
+}
+
+export function documentHierarchyFromFilename(filename, contentType) {
+  const empty = { manual_label: null, topic_label: null };
+  if (!["TEMA", "CAPITULO"].includes(contentType)) return empty;
+  const normalized = normalizeFilename(filename);
+  const match = normalized.match(/^(M\d+)[-_](.+?)[-_]v\d+(?:[.]\d+)*[-_](\d+)[-_](.+)\.pdf$/i);
+  if (!match) return empty;
+  const code = match[1].toUpperCase();
+  const manual = manualTitles[code] || toSpanishTitle(match[2].replace(/[-_]+/g, " "));
+  const chapterTitle = contentType === "CAPITULO" ? chapterTitleFromFilename(normalized) : null;
+  return {
+    manual_label: `${code} · ${manual}`,
+    topic_label: chapterTitle && Number(match[3]) > 0
+      ? `Tema ${Number(match[3])} · ${chapterTitle.replace(/^Capítulo \d+ /, "")}`
+      : null,
+  };
 }
 
 function fallbackTitleFromFilename(filename) {
-  const manualTitles = {
-    M1: "Incendios",
-    M2: "Rescate y salvamento",
-    M3: "Riesgos tecnológicos y asistencias técnicas",
-    M4: "Intervenciones sanitarias en emergencias",
-    M5: "Acondicionamiento físico y socorrismo",
-    M6: "Equipos operativos y herramientas de intervención",
-    M7: "Formación del mando intermedio",
-  };
   const manualCode = String(filename).match(/^(M\d+)/i)?.[1]?.toUpperCase();
   if (/-00-completo\.pdf$/i.test(filename) && manualTitles[manualCode]) {
     return manualTitles[manualCode];

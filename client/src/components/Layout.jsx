@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
+import AppFooter from "./AppFooter.jsx";
 
 export default function Layout({ auth }) {
   const [collapsed, setCollapsed] = useState(() => {
@@ -80,7 +81,8 @@ export default function Layout({ auth }) {
       </aside>
 
       <main className="content">
-        <Outlet />
+        <div className="content-body"><Outlet /></div>
+        <AppFooter />
       </main>
     </div>
   );

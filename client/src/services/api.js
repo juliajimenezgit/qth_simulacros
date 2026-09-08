@@ -32,13 +32,18 @@ async function request(path, options = {}) {
 
   if (!response.ok) {
     let message = "No se ha podido completar la operacion";
+    let details;
     try {
       const data = await response.json();
       message = data.message || message;
+      details = data.details;
     } catch {
       // Ignore non-JSON responses.
     }
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = response.status;
+    error.details = details;
+    throw error;
   }
 
   if (response.status === 204) {
@@ -56,10 +61,16 @@ export const api = {
     }),
   me: () => request("/api/auth/me"),
   documents: () => request("/api/documents"),
-  uploadDocument: (file, contentType) => {
+  renameDocument: (id, name) => request(`/api/documents/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ name }),
+  }),
+  uploadDocument: (file, contentType, choice = {}) => {
     const body = new FormData();
     body.append("pdf", file);
     body.append("contentType", contentType);
+    if (choice.action) body.append("duplicateAction", choice.action);
+    if (choice.replaceId) body.append("replaceId", choice.replaceId);
     return request("/api/documents", { method: "POST", body });
   },
   reprocessDocument: (id) =>

@@ -1,6 +1,5 @@
-import { BookOpen, FileText, FileUp, RefreshCw, Trash2, X } from "lucide-react";
+import { BookOpen, ChevronLeft, ChevronRight, FileText, FileUp, Pencil, RefreshCw, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
 import StatusBadge from "../components/StatusBadge.jsx";
 import { api } from "../services/api.js";
 
@@ -11,12 +10,16 @@ const contentTypeLabels = {
 };
 
 const emptyFilters = { name: "", type: "", from: "", to: "", status: "", professor: "" };
+const PAGE_SIZE = 15;
+const PDF_UPLOADS_ENABLED = false;
+const UPLOAD_DISABLED_MESSAGE = "Para esta primera versión, ya has subido todos los temarios necesarios.";
 const normalizeSearch = (value) => String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
 export default function Documents() {
   const [documents, setDocuments] = useState([]);
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState(emptyFilters);
+  const [page, setPage] = useState(1);
   const [showUploadDialog, setShowUploadDialog] = useState(false);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -25,14 +28,21 @@ export default function Documents() {
   const [deleting, setDeleting] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [error, setError] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editedName, setEditedName] = useState("");
+  const [savingName, setSavingName] = useState(false);
+  const [nameError, setNameError] = useState("");
+  const [duplicatePrompt, setDuplicatePrompt] = useState(null);
+  const [replaceId, setReplaceId] = useState("");
+  const duplicateResolveRef = useRef(null);
   const fileInputRef = useRef(null);
   const selectedContentTypeRef = useRef("");
 
   const stats = useMemo(
     () => [
+      { type: "MANUAL", label: "Manuales completos subidos", icon: BookOpen },
       { type: "TEMA", label: "Temas subidos", icon: FileText },
       { type: "CAPITULO", label: "Capítulos subidos", icon: FileUp },
-      { type: "MANUAL", label: "Manuales completos subidos", icon: BookOpen },
     ].map((category) => {
       const matching = documents.filter((doc) => doc.content_type === category.type);
       return {
@@ -53,11 +63,27 @@ export default function Documents() {
       && (!filters.professor || doc.owner_name === filters.professor);
   }), [documents, filters]);
   const professors = [...new Set(documents.map((doc) => doc.owner_name))].sort((a, b) => a.localeCompare(b, "es"));
-  const visibleSelectedIds = filteredDocuments.filter((doc) => selectedIds.has(doc.id)).map((doc) => doc.id);
+  const pageCount = Math.max(1, Math.ceil(filteredDocuments.length / PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const pageStart = (currentPage - 1) * PAGE_SIZE;
+  const pageDocuments = filteredDocuments.slice(pageStart, pageStart + PAGE_SIZE);
+  const visibleSelectedIds = pageDocuments.filter((doc) => selectedIds.has(doc.id)).map((doc) => doc.id);
   const selectedCount = visibleSelectedIds.length;
-  const allSelected = filteredDocuments.length > 0 && selectedCount === filteredDocuments.length;
+  const allSelected = pageDocuments.length > 0 && selectedCount === pageDocuments.length;
+  const showTypeColumn = !filters.type;
+  const showHierarchyColumn = filters.type !== "MANUAL";
+  const columnCount = 6 + Number(showTypeColumn) + Number(showHierarchyColumn);
+
+  useEffect(() => { setPage((current) => Math.min(current, pageCount)); }, [pageCount]);
+
+  function changePage(nextPage) {
+    setPage(nextPage);
+    setSelectedIds(new Set());
+    setEditingId(null);
+  }
 
   function updateFilter(key, value) {
+    setPage(1);
     setFilters((current) => ({ ...current, [key]: value }));
     setSelectedIds(new Set());
   }
@@ -100,6 +126,14 @@ export default function Documents() {
     fileInputRef.current.click();
   }
 
+  function resolveDuplicate(action) {
+    duplicateResolveRef.current?.({ action, replaceId });
+    duplicateResolveRef.current = null;
+    setDuplicatePrompt(null);
+  }
+
+  useEffect(() => () => duplicateResolveRef.current?.({ action: "cancel" }), []);
+
   async function upload(fileList) {
     const files = Array.from(fileList || []);
     const contentType = selectedContentTypeRef.current;
@@ -110,17 +144,32 @@ export default function Documents() {
     setError("");
     const failures = [];
     let succeeded = 0;
+    let cancelled = 0;
     try {
       for (const [index, file] of files.entries()) {
         try {
-          await api.uploadDocument(file, contentType);
-          succeeded += 1;
+          let choice = {};
+          while (true) {
+            try {
+              await api.uploadDocument(file, contentType, choice);
+              succeeded += 1;
+              break;
+            } catch (err) {
+              if (err.details?.code !== "DUPLICATE_DOCUMENT") throw err;
+              choice = await new Promise((resolve) => {
+                duplicateResolveRef.current = resolve;
+                setReplaceId(err.details.documents[0].id);
+                setDuplicatePrompt({ name: file.name, documents: err.details.documents });
+              });
+              if (choice.action === "cancel") { cancelled += 1; break; }
+            }
+          }
         } catch (err) {
           failures.push({ name: file.name, message: err.message });
         }
         setUploadProgress({ completed: index + 1, total: files.length });
       }
-      setUploadResult({ succeeded, total: files.length, failures });
+      setUploadResult({ succeeded, total: files.length, failures, cancelled });
       await loadDocuments();
     } finally {
       setUploading(false);
@@ -139,6 +188,22 @@ export default function Documents() {
     }
   }
 
+  async function saveName(event) {
+    event.preventDefault();
+    if (savingName || !editedName.trim()) return;
+    setSavingName(true);
+    setNameError("");
+    try {
+      const { document } = await api.renameDocument(editingId, editedName.trim());
+      setDocuments((current) => current.map((doc) => doc.id === document.id ? { ...doc, ...document } : doc));
+      setEditingId(null);
+    } catch (err) {
+      setNameError(err.message);
+    } finally {
+      setSavingName(false);
+    }
+  }
+
   function toggleDocument(id) {
     setSelectedIds((current) => {
       const next = new Set(current);
@@ -153,11 +218,11 @@ export default function Documents() {
 
   function toggleAllDocuments() {
     setSelectedIds((current) => {
-      if (filteredDocuments.length > 0 && filteredDocuments.every((doc) => current.has(doc.id))) {
+      if (pageDocuments.length > 0 && pageDocuments.every((doc) => current.has(doc.id))) {
         return new Set();
       }
 
-      return new Set(filteredDocuments.map((doc) => doc.id));
+      return new Set(pageDocuments.map((doc) => doc.id));
     });
   }
 
@@ -197,25 +262,27 @@ export default function Documents() {
           <h1>Temarios</h1>
           <span className="page-description">Reutiliza el material que ya tienes para crear nuevas preguntas.</span>
         </div>
+        <div className="library-actions library-header-actions">
         <button className="secondary-button" onClick={loadDocuments} type="button">
           <RefreshCw size={18} />
           Actualizar
         </button>
-      </header>
-
-      <div className="library-actions">
-        <Link className="primary-button" to="/crear">Generar preguntas</Link>
+        <span className="upload-button-wrapper" title={!PDF_UPLOADS_ENABLED ? UPLOAD_DISABLED_MESSAGE : undefined} tabIndex={!PDF_UPLOADS_ENABLED ? 0 : undefined} aria-label={!PDF_UPLOADS_ENABLED ? `Subir PDFs deshabilitado. ${UPLOAD_DISABLED_MESSAGE}` : undefined}>
         <button
-          className="secondary-button upload-button"
-          disabled={uploading}
+          className="secondary-button"
+          disabled={!PDF_UPLOADS_ENABLED || uploading}
           onClick={() => setShowUploadDialog(true)}
           type="button"
         >
-          <FileUp size={19} />
+          <FileUp size={18} />
           {uploading ? "Subiendo PDFs..." : "Subir PDFs"}
         </button>
+        </span>
+        </div>
+      </header>
         <input
           accept="application/pdf"
+          disabled={!PDF_UPLOADS_ENABLED}
           className="visually-hidden-file"
           multiple
           onChange={(event) => upload(event.target.files)}
@@ -223,7 +290,6 @@ export default function Documents() {
           tabIndex="-1"
           type="file"
         />
-      </div>
 
       {uploading && (
         <p role="status">
@@ -233,6 +299,7 @@ export default function Documents() {
       {uploadResult && (
         <div role="status">
           <p>Se han subido {uploadResult.succeeded} de {uploadResult.total} PDFs.</p>
+          {uploadResult.cancelled > 0 && <p>Subidas canceladas: {uploadResult.cancelled}.</p>}
           {uploadResult.failures.length > 0 && (
             <>
               <p className="form-error">No se han podido subir los siguientes archivos. Puedes volver a seleccionarlos para reintentarlo:</p>
@@ -245,6 +312,33 @@ export default function Documents() {
           )}
         </div>
       )}
+
+      {duplicatePrompt && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="duplicate-title" onKeyDown={(event) => {
+        if (event.key === "Escape") resolveDuplicate("cancel");
+        if (event.key === "Tab") {
+          const controls = [...event.currentTarget.querySelectorAll("button, select")];
+          const first = controls[0];
+          const last = controls[controls.length - 1];
+          if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+          if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+        }
+      }}>
+        <div className="upload-dialog">
+          <h2 id="duplicate-title">Ya existe un documento con este nombre</h2>
+          <p>{duplicatePrompt.name}</p>
+          <p>Puedes guardar otra copia o reemplazar el documento anterior. Al reemplazarlo se eliminarán sus preguntas y se procesará el nuevo PDF.</p>
+          {duplicatePrompt.documents.length > 1 && <label>Documento que quieres reemplazar
+            <select value={replaceId} onChange={(event) => setReplaceId(event.target.value)}>
+              {duplicatePrompt.documents.map((doc, index) => <option key={doc.id} value={doc.id}>{index + 1}. {doc.display_title || doc.original_filename}</option>)}
+            </select>
+          </label>}
+          <div className="library-actions">
+            <button className="secondary-button" type="button" onClick={() => resolveDuplicate("keep")}>Subir de todos modos</button>
+            <button className="danger-button" type="button" onClick={() => resolveDuplicate("replace")}>Reemplazar</button>
+            <button className="ghost-button" type="button" autoFocus onClick={() => resolveDuplicate("cancel")}>Cancelar</button>
+          </div>
+        </div>
+      </div>}
 
       {showUploadDialog && (
         <div
@@ -300,6 +394,16 @@ export default function Documents() {
             {category.label.replace(" subidos", "")} <span>{loading ? "…" : category.total}</span>
           </button>
         ))}
+        <button
+          className="library-clear-filters"
+          type="button"
+          aria-label="Limpiar filtros"
+          title="Limpiar filtros"
+          disabled={!Object.values(filters).some(Boolean)}
+          onClick={() => { setFilters(emptyFilters); setPage(1); setSelectedIds(new Set()); }}
+        >
+          <Trash2 size={18} aria-hidden="true" />
+        </button>
       </div>
       <div className="document-filters" id="library-filters" hidden={!showFilters}>
         <label>Tipo
@@ -328,10 +432,6 @@ export default function Documents() {
             {professors.map((name) => <option key={name} value={name}>{name}</option>)}
           </select>
         </label>
-        <div className="document-filters-footer">
-          <span role="status">{loading ? "Cargando..." : `${filteredDocuments.length} de ${documents.length} temarios`}</span>
-          <button className="secondary-button compact" type="button" onClick={() => { setFilters(emptyFilters); setSelectedIds(new Set()); }} disabled={!Object.values(filters).some(Boolean)}>Limpiar filtros</button>
-        </div>
       </div>
 
       {selectedCount > 0 && <div className="bulk-actions">
@@ -352,20 +452,24 @@ export default function Documents() {
           </button>
         </div>
       </div>}
-      <div className="library-result-count" role="status">
-        {loading ? "Cargando temarios…" : `${filteredDocuments.length} temarios`}
-        {Object.values(filters).some(Boolean) && <button className="ghost-button" type="button" onClick={() => { setFilters(emptyFilters); setSelectedIds(new Set()); }}>Limpiar filtros</button>}
-      </div>
 
       {error && <p className="form-error">{error}</p>}
 
+      <nav className="library-pagination" aria-label="Páginas de temarios">
+        <span role="status">{loading ? "Cargando…" : `${filteredDocuments.length ? pageStart + 1 : 0}–${Math.min(pageStart + PAGE_SIZE, filteredDocuments.length)} de ${filteredDocuments.length}`}</span>
+        <div>
+          <button className="secondary-button compact icon-button" type="button" aria-label="Página anterior" title="Página anterior" disabled={loading || savingName || currentPage === 1} onClick={() => changePage(currentPage - 1)}><ChevronLeft size={18} /></button>
+          <span>Página {currentPage} de {pageCount}</span>
+          <button className="secondary-button compact icon-button" type="button" aria-label="Página siguiente" title="Página siguiente" disabled={loading || savingName || currentPage === pageCount} onClick={() => changePage(currentPage + 1)}><ChevronRight size={18} /></button>
+        </div>
+      </nav>
       <div className="table-wrap">
         <table>
           <thead>
             <tr>
               <th className="selection-cell">
                 <input
-                  aria-label="Seleccionar todos los resultados"
+                  aria-label="Seleccionar los resultados de esta página"
                   checked={allSelected}
                   disabled={filteredDocuments.length === 0}
                   onChange={toggleAllDocuments}
@@ -373,7 +477,8 @@ export default function Documents() {
                 />
               </th>
               <th>Nombre del temario</th>
-              <th>Tipo</th>
+              {showTypeColumn && <th>Tipo</th>}
+              {showHierarchyColumn && <th>{filters.type === "CAPITULO" ? "Manual y tema" : filters.type ? "Manual" : "Manual / Tema"}</th>}
               <th>Fecha de subida</th>
               <th>Estado</th>
               <th>Profesor</th>
@@ -383,14 +488,14 @@ export default function Documents() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan="7">Cargando temarios...</td>
+                <td colSpan={columnCount}>Cargando temarios...</td>
               </tr>
             ) : filteredDocuments.length === 0 ? (
               <tr>
-                <td colSpan="7">{documents.length === 0 ? "No hay temarios subidos." : "No hay temarios que coincidan con los filtros."}</td>
+                <td colSpan={columnCount}>{documents.length === 0 ? "No hay temarios subidos." : "No hay temarios que coincidan con los filtros."}</td>
               </tr>
             ) : (
-              filteredDocuments.map((doc) => (
+              pageDocuments.map((doc) => (
                 <tr key={doc.id}>
                   <td className="selection-cell">
                     <input
@@ -401,11 +506,29 @@ export default function Documents() {
                     />
                   </td>
                   <td>
-                    <strong>{doc.display_title || doc.original_filename}</strong>
+                    {editingId === doc.id ? <form className="document-name-form" onSubmit={saveName}>
+                      <input aria-label="Nombre del temario" autoFocus required maxLength={200} value={editedName} disabled={savingName} onChange={(event) => setEditedName(event.target.value)} />
+                      <div className="row-actions">
+                        <button className="secondary-button compact" type="submit" disabled={savingName || !editedName.trim()}>{savingName ? "Guardando…" : "Guardar"}</button>
+                        <button className="ghost-button" type="button" disabled={savingName} onClick={() => setEditingId(null)}>Cancelar</button>
+                      </div>
+                      {nameError && <small className="form-error" role="alert">{nameError}</small>}
+                    </form> : <strong className={doc.status !== "AVAILABLE" ? "document-name-unavailable" : undefined} title={doc.original_filename}>{doc.display_title || doc.original_filename}</strong>}
                     {doc.display_title && <small className="document-filename">{doc.original_filename}</small>}
                     {doc.error_message && <small>{doc.error_message}</small>}
                   </td>
-                  <td>{contentTypeLabels[doc.content_type] || doc.content_type}</td>
+                  {showTypeColumn && <td>{contentTypeLabels[doc.content_type] || doc.content_type}</td>}
+                  {showHierarchyColumn && <td className="document-hierarchy">
+                    {doc.content_type === "MANUAL" ? "—" : (
+                      <>
+                        <span className="document-manual-label">{doc.manual_label?.replace(/\s*·\s*/g, " ") || "Manual no identificado"}</span>
+                        {doc.content_type === "CAPITULO" && <>
+                          <span className="document-hierarchy-separator"> · </span>
+                          <span className="document-topic-label">{doc.topic_label?.replace(/^Tema\s+(\d+)/i, "T$1").replace(/\s*·\s*/g, " ") || "Tema no identificado"}</span>
+                        </>}
+                      </>
+                    )}
+                  </td>}
                   <td>{new Date(doc.created_at).toLocaleDateString("es-ES")}</td>
                   <td>
                     <StatusBadge status={doc.status} />
@@ -413,7 +536,16 @@ export default function Documents() {
                   <td>{doc.owner_name}</td>
                   <td>
                     <div className="row-actions">
-                      {doc.status === "AVAILABLE" && <Link className="secondary-button compact" to={`/crear?documento=${encodeURIComponent(doc.id)}`}>Usar temario</Link>}
+                      <button
+                        className="secondary-button compact icon-button"
+                        type="button"
+                        title="Cambiar nombre"
+                        aria-label={`Cambiar nombre de ${doc.display_title || doc.original_filename}`}
+                        disabled={savingName}
+                        onClick={() => { setEditingId(doc.id); setEditedName(doc.display_title || doc.original_filename); setNameError(""); }}
+                      >
+                        <Pencil size={16} />
+                      </button>
                       {doc.status === "ERROR" && (
                         <button
                           className="secondary-button compact"

@@ -1,10 +1,12 @@
 import { Router } from "express";
+import fs from "node:fs/promises";
 import { requireAuth } from "../middleware/auth.js";
 import { uploadPdf } from "../middleware/upload.js";
 import {
   createDocumentRecord,
   deleteDocuments,
   listDocuments,
+  renameDocument,
   retryDocumentProcessing,
   scheduleDocumentProcessing,
 } from "../services/documentService.js";
@@ -22,6 +24,13 @@ router.get(
   }),
 );
 
+router.patch(
+  "/:id",
+  asyncHandler(async (req, res) => {
+    res.json({ document: await renameDocument(req.params.id, req.user, req.body?.name) });
+  }),
+);
+
 router.post(
   "/",
   uploadPdf.single("pdf"),
@@ -30,16 +39,25 @@ router.post(
       throw new HttpError(400, "Debes subir un archivo PDF");
     }
 
-    const contentType = String(req.body.contentType || "").toUpperCase();
-    if (!DOCUMENT_CONTENT_TYPES.has(contentType)) {
-      throw new HttpError(400, "Selecciona si el PDF es un manual, tema o capítulo");
-    }
+    let document;
+    try {
+      const contentType = String(req.body.contentType || "").toUpperCase();
+      if (!DOCUMENT_CONTENT_TYPES.has(contentType)) {
+        throw new HttpError(400, "Selecciona si el PDF es un manual, tema o capítulo");
+      }
 
-    const document = await createDocumentRecord({
-      userId: req.user.id,
-      file: req.file,
-      contentType,
-    });
+      document = await createDocumentRecord({
+        userId: req.user.id,
+        user: req.user,
+        file: req.file,
+        contentType,
+        duplicateAction: req.body.duplicateAction,
+        replaceId: req.body.replaceId,
+      });
+    } catch (error) {
+      await fs.unlink(req.file.path).catch(() => {});
+      throw error;
+    }
 
     scheduleDocumentProcessing(document.id);
 

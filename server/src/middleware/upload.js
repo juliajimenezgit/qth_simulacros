@@ -1,4 +1,5 @@
 import fs from "fs";
+import { randomUUID } from "node:crypto";
 import path from "path";
 import multer from "multer";
 import slugify from "slugify";
@@ -17,7 +18,7 @@ const storage = multer.diskStorage({
       lower: true,
       strict: true,
     });
-    cb(null, `${Date.now()}-${base || "temario"}.pdf`);
+    cb(null, `${randomUUID()}-${base || "temario"}.pdf`);
   },
 });
 

@@ -49,6 +49,9 @@ button:disabled {
 
 .boot-screen,
 .login-page {
+  grid-template-rows: 1fr auto;
+  gap: 24px;
+  padding: 32px 16px 16px;
   min-height: 100vh;
   display: grid;
   place-items: center;
@@ -352,9 +355,15 @@ textarea:focus {
 }
 
 .content {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   padding: 32px;
 }
+
+.content-body { flex: 1; min-width: 0; }
+.app-footer { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 6px; width: 100%; max-width: 1220px; margin: 32px auto 0; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.login-page > .app-footer { justify-content: center; text-align: center; }
 
 .page {
   display: grid;
@@ -1354,6 +1363,12 @@ button, .sidebar-nav a, a.secondary-button, a.primary-button {
 .library-page { position: relative; }
 .library-page .page-header { padding-right: 0; }
 .library-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.library-header-actions { align-items: center; flex-wrap: nowrap; flex-shrink: 0; }
+.library-actions .library-subtle-action { background: transparent; color: var(--muted); border-color: var(--line); font-size: 12px; font-weight: 500; min-height: 34px; padding: 6px 10px; }
+.library-actions .library-subtle-action:hover:not(:disabled) { background: #eeeeee; color: var(--text); }
+.upload-button-wrapper { display: inline-flex; }
+.upload-button-wrapper:has(button:disabled) { cursor: not-allowed; }
+.upload-button-wrapper button:disabled { pointer-events: none; }
 .library-search { display: flex; align-items: flex-end; gap: 12px; margin-top: 8px; }
 .library-search label { flex: 1; font-size: 13px; }
 .library-search input { padding: 13px 16px; }
@@ -1361,12 +1376,16 @@ button, .sidebar-nav a, a.secondary-button, a.primary-button {
 .library-tabs button { background: transparent; border: 1px solid transparent; border-radius: 8px; padding: 9px 12px; font-size: 13px; color: var(--muted); font-weight: 700; }
 .library-tabs button[aria-pressed="true"] { background: var(--soft-red); color: var(--red); border-color: #edc4bf; }
 .library-tabs button span { margin-left: 8px; font-variant-numeric: tabular-nums; }
-.library-result-count { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 13px; }
+.library-tabs .library-clear-filters { margin-left: auto; display: inline-flex; align-items: center; justify-content: center; }
 .library-page .table-wrap { border-radius: 12px; }
+.library-pagination { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; color: var(--muted); font-size: 13px; }
+.library-pagination > div { display: flex; align-items: center; gap: 12px; }
 .library-page td { font-size: 13px; padding: 16px 12px; }
 .library-page th { font-size: 11px; padding: 14px 12px; }
 .library-page td:nth-child(2) { min-width: 220px; }
 .library-page td small { font-size: 11px; overflow-wrap: anywhere; }
+.library-page .document-name-unavailable { color: var(--muted); }
+.document-name-form { display: grid; gap: 8px; }
 .library-page tbody tr:hover { background: #fafafa; }
 .library-page .row-actions { flex-wrap: nowrap; }
 .library-page .row-actions a { white-space: nowrap; }
@@ -1433,3 +1452,8 @@ button, .sidebar-nav a, a.secondary-button, a.primary-button {
   .sidebar-collapsed .sidebar-footer { display: none; }
   .sidebar-collapsed .sidebar { gap: 0; }
 }
+.library-page .document-hierarchy { min-width: 190px; }
+.library-page .document-manual-label { color: #374151; font-weight: 600; }
+.library-page .document-topic-label { color: #526780; }
+.library-page .document-hierarchy-separator { color: var(--muted); }
+.library-page .document-hierarchy small { color: var(--muted); font-size: 12px; }

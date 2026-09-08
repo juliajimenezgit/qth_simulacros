@@ -1,3 +1,4 @@
+import { containsCategoryReference, formatCeisSourceLabel, stripSourcePrefix, stripLegacyCeisPrefix } from "../utils/questionSource.js";
 import { z } from "zod";
 import { env } from "../config/env.js";
 import { query, withTransaction } from "../db/pool.js";
@@ -130,6 +131,7 @@ function applyDocumentHierarchy(row) {
     topic = originalFilename;
     chapter = "No identificado";
   } else if (row.content_type === "CAPITULO") {
+    topic = originalFilename.replace(/[-_ ]cap(?:[ií]tulo)?[-_ ]*\d+(?=\.pdf$)/i, "");
     chapter = originalFilename;
   }
 
@@ -155,61 +157,6 @@ function applyDocumentHierarchy(row) {
   };
 }
 
-function formatCeisSourceLabel(displayTitle, originalFilename) {
-  const title = normalizeUnicode(displayTitle || "")
-    .trim()
-    .replace(/[.;:]+$/u, "");
-  const fallback = normalizeFilename(originalFilename)
-    .replace(/\.pdf$/i, "")
-    .replace(/^.*-\d{2}-/, "")
-    .replace(/([a-záéíóúüñ])([A-ZÁÉÍÓÚÜÑ])/g, "$1 $2")
-    .replace(/[-_]+/g, " ")
-    .trim();
-  const readable = title || fallback;
-  const normalized = readable
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "")
-    .toLocaleLowerCase("es-ES")
-    .replace(/\s+/g, " ")
-    .trim();
-  const canonicalTitles = [
-    [/urgencias traumaticas/, "Urgencias Traumáticas"],
-    [/mecanica.*conduccion.*4x4|vehiculos.*mecanica/, "Mecánica y Conducción 4x4"],
-    [/incendios de vegetacion|vegetacion/, "Incendios de Vegetación"],
-    [/soporte vital/, "Soporte Vital"],
-    [/teoria del fuego|teoriafuego/, "Teoría del Fuego"],
-    [/riesgo electrico/, "Riesgo Eléctrico"],
-    [/\bnrbq\b/, "NRBQ"],
-    [/hidraulica/, "Hidráulica"],
-    [/incendios estructurales/, "Incendios Estructurales"],
-    [/proteccion respiratoria|epis.*vias respiratorias/, "EPIs Vías Respiratorias"],
-    [/bombas centrifugas/, "Bombas Centrífugas"],
-    [/edificaciones/, "Edificaciones"],
-    [/urgencias medicas/, "Urgencias Médicas"],
-  ];
-  const canonical = canonicalTitles.find(([pattern]) => pattern.test(normalized));
-  const baseTitle = canonical?.[1] || readable
-    .replace(/\s+(?:del\s+)?CEIS(?:\s+(?:de\s+)?Guadalajara)?$/i, "")
-    .trim();
-  return `${baseTitle} del CEIS Guadalajara`;
-}
-
-function stripSourcePrefix(question, previousTitle) {
-  const title = normalizeUnicode(previousTitle || "").trim().replace(/[.?!:;]+$/u, "");
-  if (!title || !question.toLocaleLowerCase("es-ES").startsWith(title.toLocaleLowerCase("es-ES"))) {
-    return question;
-  }
-  return question.slice(title.length).replace(/^[.?!:;\s-]+/u, "").trim();
-}
-
-function stripLegacyCeisPrefix(question) {
-  return question
-    .replace(
-      /^[^?\n]{2,100}\s+(?:del\s+CEIS\s+Guadalajara|CEIS)[.;]\s+/iu,
-      "",
-    )
-    .trim();
-}
 
 function resolveManualFilename(originalFilename) {
   if (/-00-completo\.pdf$/i.test(originalFilename)) {
@@ -622,7 +569,8 @@ EJEMPLOS DE EXÁMENES OFICIALES (imita su estilo, estructura y calidad de distra
 ${privateKnowledge.officialExamples}
 
 Reparte las preguntas entre apartados distintos del contexto cuando sea posible. Si aparecen formulas, unidades, listas, definiciones normativas o valores numericos, conviertelos en preguntas evaluables.
-El campo source_title debe ser un titulo legible para un profesor. El enunciado se mostrara precedido por ese titulo. No inventes tema, capitulo ni apartado: extraelos del contexto; si no se identifican, indica "No identificado".
+El campo source_title debe contener únicamente el título del contenido, sin etiquetas ni números de manual, tema o capítulo. La aplicación añadirá al enunciado la fuente "${formatCeisSourceLabel(document.display_title, document.original_filename)}"; no la escribas en question ni en las respuestas.
+Los campos topic, chapter y reference son metadatos de clasificación. Nunca incluyas etiquetas como "Capítulo 5", "Tema 2", nombres de archivos o referencias a la estructura del PDF en question, option_a, option_b, option_c ni option_d. Pregunta por el contenido, no por su ubicación en el documento. No inventes tema, capitulo ni apartado: extraelos del contexto; si no se identifican, indica "No identificado".
 
 Evita repetir estas preguntas ya generadas:
 ${previousQuestions.length ? previousQuestions.map((q) => `- ${q}`).join("\n") : "- Ninguna"}
@@ -661,6 +609,8 @@ async function saveIfUnique({ question, sourceChunk, document, testId, userId, d
   const topic =
     document.content_type === "TEMA"
       ? originalFilename
+      : document.content_type === "CAPITULO"
+        ? originalFilename.replace(/[-_ ]cap(?:[ií]tulo)?[-_ ]*\d+(?=\.pdf$)/i, "")
       : normalizeUnicode(question.topic || "No identificado");
   const chapter =
     document.content_type === "TEMA"
@@ -680,6 +630,9 @@ async function saveIfUnique({ question, sourceChunk, document, testId, userId, d
     .startsWith(sourceLabel.toLocaleLowerCase("es-ES"))
     ? cleanQuestion
     : `${sourceLabel}. ${cleanQuestion}`;
+  // Reject structural labels instead of deleting words from potentially meaningful answers.
+  if ([prefixedQuestion, question.option_a, question.option_b, question.option_c, question.option_d]
+    .some(containsCategoryReference)) return null;
   const embedding = await createEmbedding(
     `${prefixedQuestion}\n${question.option_a}\n${question.option_b}\n${question.option_c}\n${question.option_d}`,
   );

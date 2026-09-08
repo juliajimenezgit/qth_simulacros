@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import QuestionReview from "../components/QuestionReview.jsx";
 import { api } from "../services/api.js";
+import { toggleDocumentSelection } from "../utils/documentSelection.js";
 
 export default function Generator() {
   const [searchParams] = useSearchParams();
@@ -68,11 +69,8 @@ export default function Generator() {
   useEffect(() => {
     api.documents().then((data) => {
       setDocuments(data.documents);
-      setSelectedDocumentIds(
-        data.documents
-          .filter((document) => document.status === "AVAILABLE" && document.id === requestedDocument)
-          .map((document) => document.id),
-      );
+      const requested = data.documents.find((document) => document.status === "AVAILABLE" && document.id === requestedDocument);
+      setSelectedDocumentIds(requested ? toggleDocumentSelection(data.documents, [], requested) : []);
     }).catch((err) => setError(err.message)).finally(() => setSourcesLoading(false));
   }, [requestedDocument]);
 
@@ -81,26 +79,14 @@ export default function Generator() {
   }
 
   function toggleDocument(document) {
-    setSelectedDocumentIds((current) => {
-      const isSelected = current.includes(document.id);
-      const next = isSelected
-        ? current.filter((id) => id !== document.id)
-        : [...current, document.id];
-
-      if (isSelected) {
-        const hasAnotherOfType = availableDocuments.some(
-          (item) =>
-            item.id !== document.id &&
-            item.content_type === document.content_type &&
-            next.includes(item.id),
-        );
-        if (!hasAnotherOfType) {
-          setContentCounts((counts) => ({ ...counts, [document.content_type]: 0 }));
-        }
-      }
-      return next;
-    });
+    setSelectedDocumentIds((current) => toggleDocumentSelection(availableDocuments, current, document));
   }
+
+  useEffect(() => {
+    setContentCounts((current) => Object.fromEntries(
+      Object.entries(current).map(([type, count]) => [type, selectedTotals[type] ? count : 0]),
+    ));
+  }, [selectedTotals]);
 
   function configureFullExam() {
     const activeTypes = ["MANUAL", "TEMA", "CAPITULO"].filter(
@@ -199,7 +185,7 @@ export default function Generator() {
                 <div className="distribution-heading">
                   <div>
                     <h2>¿Sobre qué quieres preguntar?</h2>
-                    <p>Selecciona material de tu biblioteca. Puedes combinar varios temarios.</p>
+                    <p>Al seleccionar un manual se incluyen sus temas y capítulos disponibles. Al seleccionar un tema se incluyen sus capítulos.</p>
                   </div>
                   <strong>{selectedDocumentIds.length}</strong>
                 </div>

@@ -3,6 +3,7 @@ import { query, withTransaction } from "../db/pool.js";
 import { createEmbeddings, isOpenAiConfigured } from "./openaiService.js";
 import {
   extractDocumentDisplayTitle,
+  documentHierarchyFromFilename,
   extractPdfPages,
   splitIntoChunks,
 } from "./pdfService.js";
@@ -45,33 +46,69 @@ export async function listDocuments(user) {
 
   return rows.map((row) => ({
     ...row,
+    ...documentHierarchyFromFilename(row.original_filename, row.content_type),
     original_filename: normalizeFilename(row.original_filename),
     owner_name: normalizeUnicode(row.owner_name),
     error_message: row.error_message ? normalizeUnicode(row.error_message) : null,
   }));
 }
 
-export async function createDocumentRecord({ userId, file, contentType }) {
-  const originalFilename = normalizeFilename(file.originalname);
+export async function renameDocument(id, user, name) {
+  if (typeof name !== "string" || !name.trim() || name.trim().length > 200) {
+    throw new HttpError(400, "El nombre debe tener entre 1 y 200 caracteres");
+  }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    throw new HttpError(400, "Identificador de temario no válido");
+  }
   const { rows } = await query(
-    `insert into documents
-       (user_id, filename, original_filename, storage_path, content_type, status)
-     values ($1, $2, $3, $4, $5, 'PROCESSING')
-     returning *`,
-    [userId, file.filename, originalFilename, file.path, contentType],
+    `update documents set display_title = $2
+     where id = $1 and (user_id = $3 or $4)
+     returning id, display_title`,
+    [id, normalizeUnicode(name.trim()), user.id, user.role === "ADMIN"],
   );
-
-  await query(
-    `insert into activity_logs (user_id, action, entity_type, entity_id, metadata)
-     values ($1, 'DOCUMENT_UPLOADED', 'document', $2, $3)`,
-    [
-      userId,
-      rows[0].id,
-      JSON.stringify({ filename: originalFilename, contentType }),
-    ],
-  );
-
+  if (!rows[0]) throw new HttpError(404, "Temario no encontrado");
   return rows[0];
+}
+
+export async function createDocumentRecord({ userId, user, file, contentType, duplicateAction, replaceId }) {
+  const originalFilename = normalizeFilename(file.originalname);
+  let removedPaths = [];
+  const document = await withTransaction(async (client) => {
+    // Serialize the duplicate check and insertion, including simultaneous uploads.
+    await client.query("select pg_advisory_xact_lock(734821)");
+    const { rows: matches } = await client.query(
+      `select id, original_filename, display_title, storage_path from documents
+       where lower(trim(original_filename)) = lower(trim($1))
+       and (user_id = $2 or $3) order by created_at desc for update`,
+      [originalFilename, userId, user?.role === "ADMIN"],
+    );
+    if (matches.length && !["keep", "replace"].includes(duplicateAction)) {
+      throw new HttpError(409, "Ya existe un documento con el mismo nombre", {
+        code: "DUPLICATE_DOCUMENT",
+        documents: matches.map(({ id, original_filename, display_title }) => ({ id, original_filename, display_title })),
+      });
+    }
+    if (duplicateAction === "replace") {
+      const target = matches.find((doc) => doc.id === replaceId);
+      if (!target) throw new HttpError(409, "El documento que querías reemplazar ya no existe. Vuelve a subir el archivo.");
+      await client.query("delete from documents where id = $1", [target.id]);
+      removedPaths = [target.storage_path];
+    }
+    const { rows } = await client.query(
+      `insert into documents
+         (user_id, filename, original_filename, storage_path, content_type, status)
+       values ($1, $2, $3, $4, $5, 'PROCESSING') returning *`,
+      [userId, file.filename, originalFilename, file.path, contentType],
+    );
+    await client.query(
+      `insert into activity_logs (user_id, action, entity_type, entity_id, metadata)
+       values ($1, 'DOCUMENT_UPLOADED', 'document', $2, $3)`,
+      [userId, rows[0].id, JSON.stringify({ filename: originalFilename, contentType, duplicateAction, replaceId })],
+    );
+    return rows[0];
+  });
+  await removeStoredFiles(removedPaths);
+  return document;
 }
 
 export async function processDocument(documentId) {
@@ -115,7 +152,7 @@ export async function processDocument(documentId) {
       await client.query(
         `update documents
          set status = 'AVAILABLE', processed_at = now(), error_message = null,
-             display_title = $2
+             display_title = coalesce(display_title, $2)
          where id = $1`,
         [documentId, displayTitle],
       );
