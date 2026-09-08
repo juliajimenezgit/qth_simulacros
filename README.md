@@ -84,7 +84,7 @@ Elige solo una de las dos modalidades siguientes. No las combines.
 
 ### Modalidad A: backend y frontend juntos
 
-Úsala cuando backend y frontend estén detenidos:
+Úsala cuando backend y frontend estén detenidos. Recuerda tener activado Docker:
 
 ```bash
 docker compose up -d postgres

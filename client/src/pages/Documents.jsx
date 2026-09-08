@@ -1,6 +1,6 @@
 import { BookOpen, FileText, FileUp, RefreshCw, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import StatCard from "../components/StatCard.jsx";
+import { Link } from "react-router-dom";
 import StatusBadge from "../components/StatusBadge.jsx";
 import { api } from "../services/api.js";
 
@@ -10,8 +10,13 @@ const contentTypeLabels = {
   CAPITULO: "Capítulo",
 };
 
+const emptyFilters = { name: "", type: "", from: "", to: "", status: "", professor: "" };
+const normalizeSearch = (value) => String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
 export default function Documents() {
   const [documents, setDocuments] = useState([]);
+  const [showFilters, setShowFilters] = useState(false);
+  const [filters, setFilters] = useState(emptyFilters);
   const [showUploadDialog, setShowUploadDialog] = useState(false);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -24,16 +29,38 @@ export default function Documents() {
   const selectedContentTypeRef = useRef("");
 
   const stats = useMemo(
-    () => ({
-      total: documents.length,
-      available: documents.filter((doc) => doc.status === "AVAILABLE").length,
-      questions: documents.reduce((sum, doc) => sum + doc.question_count, 0),
+    () => [
+      { type: "TEMA", label: "Temas subidos", icon: FileText },
+      { type: "CAPITULO", label: "Capítulos subidos", icon: FileUp },
+      { type: "MANUAL", label: "Manuales completos subidos", icon: BookOpen },
+    ].map((category) => {
+      const matching = documents.filter((doc) => doc.content_type === category.type);
+      return {
+        ...category,
+        total: matching.length,
+      };
     }),
     [documents],
   );
-  const selectedCount = selectedIds.size;
-  const allSelected =
-    documents.length > 0 && documents.every((doc) => selectedIds.has(doc.id));
+  const filteredDocuments = useMemo(() => documents.filter((doc) => {
+    const date = new Date(doc.created_at);
+    const day = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    return normalizeSearch(`${doc.original_filename} ${doc.display_title || ""}`).includes(normalizeSearch(filters.name.trim()))
+      && (!filters.type || doc.content_type === filters.type)
+      && (!filters.from || day >= filters.from)
+      && (!filters.to || day <= filters.to)
+      && (!filters.status || doc.status === filters.status)
+      && (!filters.professor || doc.owner_name === filters.professor);
+  }), [documents, filters]);
+  const professors = [...new Set(documents.map((doc) => doc.owner_name))].sort((a, b) => a.localeCompare(b, "es"));
+  const visibleSelectedIds = filteredDocuments.filter((doc) => selectedIds.has(doc.id)).map((doc) => doc.id);
+  const selectedCount = visibleSelectedIds.length;
+  const allSelected = filteredDocuments.length > 0 && selectedCount === filteredDocuments.length;
+
+  function updateFilter(key, value) {
+    setFilters((current) => ({ ...current, [key]: value }));
+    setSelectedIds(new Set());
+  }
   const hasProcessing = documents.some((doc) => doc.status === "PROCESSING");
 
   async function loadDocuments({ silent = false } = {}) {
@@ -126,11 +153,11 @@ export default function Documents() {
 
   function toggleAllDocuments() {
     setSelectedIds((current) => {
-      if (documents.length > 0 && documents.every((doc) => current.has(doc.id))) {
+      if (filteredDocuments.length > 0 && filteredDocuments.every((doc) => current.has(doc.id))) {
         return new Set();
       }
 
-      return new Set(documents.map((doc) => doc.id));
+      return new Set(filteredDocuments.map((doc) => doc.id));
     });
   }
 
@@ -161,33 +188,14 @@ export default function Documents() {
     }
   }
 
-  async function deleteAllDocuments() {
-    if (documents.length === 0) return;
-
-    const confirmed = window.confirm(
-      `¿Eliminar todos los temarios visibles (${documents.length}) y sus preguntas?`,
-    );
-    if (!confirmed) return;
-
-    setDeleting(true);
-    setError("");
-    try {
-      await api.deleteDocuments({ all: true });
-      setSelectedIds(new Set());
-      await loadDocuments();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setDeleting(false);
-    }
-  }
 
   return (
-    <section className="page">
+    <section className="page library-page">
       <header className="page-header">
         <div>
-          <p>Panel profesor</p>
-          <h1>Mis temarios</h1>
+          <p>Biblioteca</p>
+          <h1>Temarios</h1>
+          <span className="page-description">Reutiliza el material que ya tienes para crear nuevas preguntas.</span>
         </div>
         <button className="secondary-button" onClick={loadDocuments} type="button">
           <RefreshCw size={18} />
@@ -195,15 +203,10 @@ export default function Documents() {
         </button>
       </header>
 
-      <div className="stats-grid">
-        <StatCard icon={FileUp} label="Temarios" value={stats.total} />
-        <StatCard label="Disponibles" value={stats.available} />
-        <StatCard label="Preguntas" value={stats.questions} />
-      </div>
-
-      <div className="upload-action">
+      <div className="library-actions">
+        <Link className="primary-button" to="/crear">Generar preguntas</Link>
         <button
-          className="primary-button upload-button"
+          className="secondary-button upload-button"
           disabled={uploading}
           onClick={() => setShowUploadDialog(true)}
           type="button"
@@ -285,7 +288,53 @@ export default function Documents() {
         </div>
       )}
 
-      <div className="bulk-actions">
+      <div className="library-search">
+        <label>Buscar en la biblioteca
+          <input type="search" placeholder="Nombre del temario…" value={filters.name} onChange={(event) => updateFilter("name", event.target.value)} />
+        </label>
+        <button className="secondary-button" type="button" aria-expanded={showFilters} aria-controls="library-filters" onClick={() => setShowFilters((value) => !value)}>Filtros{[filters.from, filters.to, filters.status, filters.professor].filter(Boolean).length > 0 ? ` (${[filters.from, filters.to, filters.status, filters.professor].filter(Boolean).length})` : ""}</button>
+      </div>
+      <div className="library-tabs" aria-label="Tipo de temario">
+        {[{ type: "", label: "Todos", total: documents.length }, ...stats].map((category) => (
+          <button key={category.type} type="button" aria-pressed={filters.type === category.type} onClick={() => updateFilter("type", category.type)}>
+            {category.label.replace(" subidos", "")} <span>{loading ? "…" : category.total}</span>
+          </button>
+        ))}
+      </div>
+      <div className="document-filters" id="library-filters" hidden={!showFilters}>
+        <label>Tipo
+          <select value={filters.type} onChange={(event) => updateFilter("type", event.target.value)}>
+            <option value="">Todos los tipos</option>
+            {Object.entries(contentTypeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+        </label>
+        <label>Subido desde
+          <input type="date" value={filters.from} max={filters.to || undefined} onChange={(event) => updateFilter("from", event.target.value)} />
+        </label>
+        <label>Subido hasta
+          <input type="date" value={filters.to} min={filters.from || undefined} onChange={(event) => updateFilter("to", event.target.value)} />
+        </label>
+        <label>Estado
+          <select value={filters.status} onChange={(event) => updateFilter("status", event.target.value)}>
+            <option value="">Todos los estados</option>
+            <option value="AVAILABLE">Disponible</option>
+            <option value="PROCESSING">Procesando</option>
+            <option value="ERROR">Error</option>
+          </select>
+        </label>
+        <label>Profesor
+          <select value={filters.professor} onChange={(event) => updateFilter("professor", event.target.value)}>
+            <option value="">Todos los profesores</option>
+            {professors.map((name) => <option key={name} value={name}>{name}</option>)}
+          </select>
+        </label>
+        <div className="document-filters-footer">
+          <span role="status">{loading ? "Cargando..." : `${filteredDocuments.length} de ${documents.length} temarios`}</span>
+          <button className="secondary-button compact" type="button" onClick={() => { setFilters(emptyFilters); setSelectedIds(new Set()); }} disabled={!Object.values(filters).some(Boolean)}>Limpiar filtros</button>
+        </div>
+      </div>
+
+      {selectedCount > 0 && <div className="bulk-actions">
         <span>
           {selectedCount > 0
             ? `${selectedCount} seleccionado${selectedCount === 1 ? "" : "s"}`
@@ -295,22 +344,17 @@ export default function Documents() {
           <button
             className="danger-button compact"
             disabled={selectedCount === 0 || deleting}
-            onClick={() => deleteDocuments([...selectedIds])}
+            onClick={() => deleteDocuments(visibleSelectedIds)}
             type="button"
           >
             <Trash2 size={16} />
             Eliminar seleccionados
           </button>
-          <button
-            className="danger-button compact"
-            disabled={documents.length === 0 || deleting}
-            onClick={deleteAllDocuments}
-            type="button"
-          >
-            <Trash2 size={16} />
-            Eliminar todos
-          </button>
         </div>
+      </div>}
+      <div className="library-result-count" role="status">
+        {loading ? "Cargando temarios…" : `${filteredDocuments.length} temarios`}
+        {Object.values(filters).some(Boolean) && <button className="ghost-button" type="button" onClick={() => { setFilters(emptyFilters); setSelectedIds(new Set()); }}>Limpiar filtros</button>}
       </div>
 
       {error && <p className="form-error">{error}</p>}
@@ -321,9 +365,9 @@ export default function Documents() {
             <tr>
               <th className="selection-cell">
                 <input
-                  aria-label="Seleccionar todos los temarios"
+                  aria-label="Seleccionar todos los resultados"
                   checked={allSelected}
-                  disabled={documents.length === 0}
+                  disabled={filteredDocuments.length === 0}
                   onChange={toggleAllDocuments}
                   type="checkbox"
                 />
@@ -331,7 +375,6 @@ export default function Documents() {
               <th>Nombre del temario</th>
               <th>Tipo</th>
               <th>Fecha de subida</th>
-              <th>Preguntas</th>
               <th>Estado</th>
               <th>Profesor</th>
               <th>Acciones</th>
@@ -340,14 +383,14 @@ export default function Documents() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan="8">Cargando temarios...</td>
+                <td colSpan="7">Cargando temarios...</td>
               </tr>
-            ) : documents.length === 0 ? (
+            ) : filteredDocuments.length === 0 ? (
               <tr>
-                <td colSpan="8">No hay temarios subidos.</td>
+                <td colSpan="7">{documents.length === 0 ? "No hay temarios subidos." : "No hay temarios que coincidan con los filtros."}</td>
               </tr>
             ) : (
-              documents.map((doc) => (
+              filteredDocuments.map((doc) => (
                 <tr key={doc.id}>
                   <td className="selection-cell">
                     <input
@@ -358,18 +401,19 @@ export default function Documents() {
                     />
                   </td>
                   <td>
-                    <strong>{doc.original_filename}</strong>
+                    <strong>{doc.display_title || doc.original_filename}</strong>
+                    {doc.display_title && <small className="document-filename">{doc.original_filename}</small>}
                     {doc.error_message && <small>{doc.error_message}</small>}
                   </td>
                   <td>{contentTypeLabels[doc.content_type] || doc.content_type}</td>
                   <td>{new Date(doc.created_at).toLocaleDateString("es-ES")}</td>
-                  <td>{doc.question_count}</td>
                   <td>
                     <StatusBadge status={doc.status} />
                   </td>
                   <td>{doc.owner_name}</td>
                   <td>
                     <div className="row-actions">
+                      {doc.status === "AVAILABLE" && <Link className="secondary-button compact" to={`/crear?documento=${encodeURIComponent(doc.id)}`}>Usar temario</Link>}
                       {doc.status === "ERROR" && (
                         <button
                           className="secondary-button compact"

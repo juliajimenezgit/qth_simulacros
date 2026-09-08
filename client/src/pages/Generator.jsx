@@ -1,9 +1,15 @@
 import { ChevronDown, ChevronRight, Play } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import QuestionReview from "../components/QuestionReview.jsx";
 import { api } from "../services/api.js";
 
 export default function Generator() {
+  const [searchParams] = useSearchParams();
+  const requestedDocument = searchParams.get("documento");
+  const [step, setStep] = useState(1);
+  const [sourceSearch, setSourceSearch] = useState("");
+  const [sourcesLoading, setSourcesLoading] = useState(true);
   const [documents, setDocuments] = useState([]);
   const [selectedDocumentIds, setSelectedDocumentIds] = useState([]);
   const [contentCounts, setContentCounts] = useState({
@@ -64,11 +70,11 @@ export default function Generator() {
       setDocuments(data.documents);
       setSelectedDocumentIds(
         data.documents
-          .filter((document) => document.status === "AVAILABLE")
+          .filter((document) => document.status === "AVAILABLE" && document.id === requestedDocument)
           .map((document) => document.id),
       );
-    });
-  }, []);
+    }).catch((err) => setError(err.message)).finally(() => setSourcesLoading(false));
+  }, [requestedDocument]);
 
   function updateCount(setter, key, value) {
     setter((current) => ({ ...current, [key]: Math.max(0, Number(value) || 0) }));
@@ -147,14 +153,20 @@ export default function Generator() {
   }
 
   return (
-    <section className="page">
+    <section className="page generator-page">
       <header className="page-header">
         <div>
-          <p>Generador</p>
-          <h1>Crear simulacro</h1>
+          <p>Espacio del profesor</p>
+          <h1>Generar preguntas</h1>
+          <span className="page-description">Elige tus temarios, configura las preguntas y revisa el resultado.</span>
         </div>
       </header>
 
+      <nav className="creation-steps" aria-label="Pasos de generación">
+        <button type="button" aria-current={generatorOpen && step === 1 ? "step" : undefined} onClick={() => { setStep(1); setGeneratorOpen(true); }} disabled={loading}><span>1</span> Elegir temarios</button>
+        <button type="button" aria-current={generatorOpen && step === 2 ? "step" : undefined} onClick={() => { setStep(2); setGeneratorOpen(true); }} disabled={loading || selectedDocumentIds.length === 0}><span>2</span> Configurar preguntas</button>
+        <span aria-current={!generatorOpen && currentTest ? "step" : undefined}><span>3</span> Revisar y exportar</span>
+      </nav>
       <div className="flow-stack">
         <section className="flow-panel">
           <button
@@ -176,17 +188,26 @@ export default function Generator() {
               className="tool-panel embedded-panel"
               onSubmit={(event) => {
                 event.preventDefault();
-                setShowNameDialog(true);
+                if (step === 1) {
+                  if (selectedDocumentIds.length > 0) setStep(2);
+                  return;
+                }
+                if (totalsMatch && !loading) setShowNameDialog(true);
               }}
             >
-              <section className="distribution-section">
+              <section className="distribution-section" hidden={step !== 1}>
                 <div className="distribution-heading">
                   <div>
-                    <h2>PDFs que se utilizarán</h2>
-                    <p>Selecciona las fuentes concretas para generar las preguntas.</p>
+                    <h2>¿Sobre qué quieres preguntar?</h2>
+                    <p>Selecciona material de tu biblioteca. Puedes combinar varios temarios.</p>
                   </div>
                   <strong>{selectedDocumentIds.length}</strong>
                 </div>
+                <label className="source-search">Buscar temario
+                  <input type="search" value={sourceSearch} onChange={(event) => setSourceSearch(event.target.value)} placeholder="Escribe el nombre…" />
+                </label>
+                {sourcesLoading && <p role="status">Cargando tu biblioteca…</p>}
+                {!sourcesLoading && availableDocuments.length === 0 && <p className="empty-state">Todavía no hay temarios listos para usar. <Link to="/temarios">Ir a la biblioteca</Link></p>}
                 <div className="document-selection-groups">
                   {[
                     ["MANUAL", "Manuales"],
@@ -194,13 +215,13 @@ export default function Generator() {
                     ["CAPITULO", "Capítulos"],
                   ].map(([type, label]) => {
                     const typeDocuments = availableDocuments.filter(
-                      (document) => document.content_type === type,
+                      (document) => document.content_type === type && `${document.original_filename} ${document.display_title || ""}`.toLocaleLowerCase("es").includes(sourceSearch.toLocaleLowerCase("es")),
                     );
                     return (
                       <fieldset disabled={typeDocuments.length === 0} key={type}>
                         <legend>{label}</legend>
                         {typeDocuments.length === 0 ? (
-                          <p>No hay PDFs disponibles.</p>
+                          <p>{sourceSearch ? "Sin coincidencias." : "Sin temarios de este tipo."}</p>
                         ) : (
                           typeDocuments.map((document) => (
                             <label key={document.id}>
@@ -209,7 +230,7 @@ export default function Generator() {
                                 onChange={() => toggleDocument(document)}
                                 type="checkbox"
                               />
-                              <span>{document.original_filename}</span>
+                              <span>{document.display_title || document.original_filename}</span>
                             </label>
                           ))
                         )}
@@ -217,13 +238,18 @@ export default function Generator() {
                     );
                   })}
                 </div>
+                <div className="source-footer">
+                  <Link to="/temarios">Añadir o gestionar temarios</Link>
+                  <button className="primary-button" type="button" disabled={selectedDocumentIds.length === 0} onClick={() => setStep(2)}>Continuar con {selectedDocumentIds.length} temarios <ChevronRight size={18} /></button>
+                </div>
               </section>
 
+              <div className="generation-configuration" hidden={step !== 2}>
               <section className="distribution-section">
                 <div className="distribution-heading">
                   <div>
                     <h2>Preguntas por contenido</h2>
-                    <p>Se repartirán entre todos los PDFs disponibles de cada tipo.</p>
+                    <p>Se repartirán entre los temarios que has seleccionado de cada tipo.</p>
                   </div>
                   <strong>{contentTotal}</strong>
                 </div>
@@ -333,7 +359,6 @@ export default function Generator() {
                 Configurar simulacro completo (88)
               </button>
 
-              {error && <p className="form-error">{error}</p>}
               <button
                 className="primary-button large-button"
                 disabled={loading || !totalsMatch}
@@ -342,6 +367,8 @@ export default function Generator() {
                 <Play size={20} />
                 {loading ? "Generando..." : "Generar preguntas"}
               </button>
+              </div>
+              {error && <p className="form-error" role="alert">{error}</p>}
             </form>
           )}
         </section>
@@ -352,7 +379,7 @@ export default function Generator() {
           </div>
         )}
 
-        <section className="flow-panel">
+        {currentTest && <section className="flow-panel">
           <button
             className="flow-panel-toggle"
             onClick={() => setReviewOpen((open) => !open)}
@@ -377,7 +404,7 @@ export default function Generator() {
               />
             </div>
           )}
-        </section>
+        </section>}
       </div>
 
       {showNameDialog && (
