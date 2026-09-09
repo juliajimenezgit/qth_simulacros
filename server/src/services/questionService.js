@@ -1,3 +1,4 @@
+import { buildDocumentJobs } from "../utils/questionAllocation.js";
 import { containsCategoryReference, formatCeisSourceLabel, stripSourcePrefix, stripLegacyCeisPrefix } from "../utils/questionSource.js";
 import { z } from "zod";
 import { env } from "../config/env.js";
@@ -284,6 +285,7 @@ export async function generateConfiguredQuestions({
   user,
   selectedDocumentIds,
   contentCounts,
+  documentCounts,
   difficultyCounts,
   testName,
 }) {
@@ -331,9 +333,9 @@ export async function generateConfiguredQuestions({
   const remainingDifficulty = Object.entries(difficultyCounts).map(
     ([difficulty, count]) => ({ difficulty: difficultyMap[difficulty], count }),
   );
-  const jobs = [];
+  const jobs = documentCounts ? buildDocumentJobs(documents, documentCounts, contentCounts, difficultyCounts) : [];
 
-  for (const [contentType, requestedCount] of Object.entries(contentCounts)) {
+  for (const [contentType, requestedCount] of Object.entries(documentCounts ? {} : contentCounts)) {
     let remainingContent = requestedCount;
     for (const difficulty of remainingDifficulty) {
       const count = Math.min(remainingContent, difficulty.count);
@@ -360,7 +362,7 @@ export async function generateConfiguredQuestions({
   const saved = [];
   try {
     for (const job of jobs) {
-      const matchingDocuments = documentsByType[job.contentType];
+      const matchingDocuments = job.documentId ? documents.filter((document) => document.id === job.documentId) : documentsByType[job.contentType];
       const baseCount = Math.floor(job.count / matchingDocuments.length);
       const extra = job.count % matchingDocuments.length;
 

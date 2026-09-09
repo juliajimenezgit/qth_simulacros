@@ -13,12 +13,10 @@ export default function Generator() {
   const [sourcesLoading, setSourcesLoading] = useState(true);
   const [documents, setDocuments] = useState([]);
   const [selectedDocumentIds, setSelectedDocumentIds] = useState([]);
-  const [contentCounts, setContentCounts] = useState({
-    MANUAL: 0,
-    TEMA: 0,
-    CAPITULO: 0,
-  });
-  const [difficultyCounts, setDifficultyCounts] = useState({ P: 0, F: 0, D: 0 });
+  const [questionTotal, setQuestionTotal] = useState(10);
+  const [contentMode, setContentMode] = useState("complete");
+  const [documentCounts, setDocumentCounts] = useState({});
+  const [difficultyCounts, setDifficultyCounts] = useState({ P: 4, F: 3, D: 3 });
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -33,38 +31,36 @@ export default function Generator() {
     () => documents.filter((document) => document.status === "AVAILABLE"),
     [documents],
   );
-  const documentTotals = useMemo(
-    () => Object.fromEntries(
-      ["MANUAL", "TEMA", "CAPITULO"].map((type) => [
-        type,
-        availableDocuments.filter((document) => document.content_type === type).length,
-      ]),
-    ),
-    [availableDocuments],
-  );
   const selectedDocuments = useMemo(
     () => availableDocuments.filter((document) => selectedDocumentIds.includes(document.id)),
     [availableDocuments, selectedDocumentIds],
   );
-  const selectedTotals = useMemo(
-    () => Object.fromEntries(
-      ["MANUAL", "TEMA", "CAPITULO"].map((type) => [
-        type,
-        selectedDocuments.filter((document) => document.content_type === type).length,
-      ]),
-    ),
-    [selectedDocuments],
-  );
-  const contentTotal = Object.values(contentCounts).reduce(
-    (sum, value) => sum + Number(value),
-    0,
-  );
-  const difficultyTotal = Object.values(difficultyCounts).reduce(
-    (sum, value) => sum + Number(value),
-    0,
-  );
-  const totalsMatch =
-    contentTotal > 0 && contentTotal === difficultyTotal && contentTotal <= 120;
+  const hasComplete = selectedDocuments.some((document) => document.content_type !== "CAPITULO");
+  const hasChapters = selectedDocuments.some((document) => document.content_type === "CAPITULO");
+  const effectiveMode = !hasComplete ? "chapters" : !hasChapters ? "complete" : contentMode;
+  const targetDocuments = useMemo(() => selectedDocuments.filter((document) =>
+    effectiveMode === "mixed" || (effectiveMode === "chapters" ? document.content_type === "CAPITULO" : document.content_type !== "CAPITULO"),
+  ), [selectedDocuments, effectiveMode]);
+  const contentCounts = targetDocuments.reduce((counts, document) => {
+    counts[document.content_type] += documentCounts[document.id] || 0;
+    return counts;
+  }, { MANUAL: 0, TEMA: 0, CAPITULO: 0 });
+  const contentTotal = Object.values(contentCounts).reduce((sum, count) => sum + count, 0);
+  const difficultyTotal = Object.values(difficultyCounts).reduce((sum, count) => sum + count, 0);
+  const totalsMatch = questionTotal >= 1 && questionTotal <= 120 && contentTotal === questionTotal && difficultyTotal === questionTotal;
+
+  function distribute(total, keys) {
+    return Object.fromEntries(keys.map((key, index) => [key, Math.floor(total / keys.length) + (index < total % keys.length ? 1 : 0)]));
+  }
+
+  useEffect(() => {
+    setDocumentCounts(distribute(questionTotal, targetDocuments.map((document) => document.id)));
+  }, [questionTotal, targetDocuments]);
+
+  function remainingText(count) {
+    const remaining = questionTotal - count;
+    return remaining === 0 ? "Todas las preguntas están asignadas." : remaining > 0 ? `Faltan ${remaining} preguntas por asignar.` : `Sobran ${-remaining} preguntas. Reduce el reparto.`;
+  }
 
   useEffect(() => {
     api.documents().then((data) => {
@@ -75,38 +71,19 @@ export default function Generator() {
   }, [requestedDocument]);
 
   function updateCount(setter, key, value) {
-    setter((current) => ({ ...current, [key]: Math.max(0, Number(value) || 0) }));
+    setter((current) => ({ ...current, [key]: Math.min(120, Math.max(0, Math.floor(Number(value) || 0))) }));
   }
 
   function toggleDocument(document) {
     setSelectedDocumentIds((current) => toggleDocumentSelection(availableDocuments, current, document));
   }
 
-  useEffect(() => {
-    setContentCounts((current) => Object.fromEntries(
-      Object.entries(current).map(([type, count]) => [type, selectedTotals[type] ? count : 0]),
-    ));
-  }, [selectedTotals]);
-
-  function configureFullExam() {
-    const activeTypes = ["MANUAL", "TEMA", "CAPITULO"].filter(
-      (type) => selectedTotals[type] > 0,
-    );
-    const nextContentCounts = { MANUAL: 0, TEMA: 0, CAPITULO: 0 };
-    activeTypes.forEach((type, index) => {
-      nextContentCounts[type] =
-        Math.floor(88 / activeTypes.length) + (index < 88 % activeTypes.length ? 1 : 0);
-    });
-    setContentCounts(nextContentCounts);
-    setDifficultyCounts({ P: 30, F: 29, D: 29 });
-  }
-
   function applyDifficultyPreset(levels) {
     const nextCounts = { P: 0, F: 0, D: 0 };
     levels.forEach((level, index) => {
       nextCounts[level] =
-        Math.floor(contentTotal / levels.length) +
-        (index < contentTotal % levels.length ? 1 : 0);
+        Math.floor(questionTotal / levels.length) +
+        (index < questionTotal % levels.length ? 1 : 0);
     });
     setDifficultyCounts(nextCounts);
   }
@@ -119,7 +96,8 @@ export default function Generator() {
 
     try {
       const data = await api.generateQuestions({
-        selectedDocumentIds,
+        selectedDocumentIds: targetDocuments.map((document) => document.id),
+        documentCounts: Object.fromEntries(targetDocuments.map((document) => [document.id, documentCounts[document.id] || 0])),
         contentCounts,
         difficultyCounts,
         testName: testName.trim() || undefined,
@@ -225,125 +203,114 @@ export default function Generator() {
                   })}
                 </div>
                 <div className="source-footer">
-                  <Link to="/temarios">Añadir o gestionar temarios</Link>
-                  <button className="primary-button" type="button" disabled={selectedDocumentIds.length === 0} onClick={() => setStep(2)}>Continuar con {selectedDocumentIds.length} temarios <ChevronRight size={18} /></button>
+                  <button className="primary-button" type="button" disabled={selectedDocumentIds.length === 0} onClick={() => setStep(2)}>Continuar <ChevronRight size={18} /></button>
                 </div>
               </section>
 
               <div className="generation-configuration" hidden={step !== 2}>
-              <section className="distribution-section">
-                <div className="distribution-heading">
-                  <div>
-                    <h2>Preguntas por contenido</h2>
-                    <p>Se repartirán entre los temarios que has seleccionado de cada tipo.</p>
-                  </div>
-                  <strong>{contentTotal}</strong>
-                </div>
-                <div className="count-grid">
-                  {[
-                    ["MANUAL", "Manual", "manuales"],
-                    ["TEMA", "Tema", "temas"],
-                    ["CAPITULO", "Capítulo", "capítulos"],
-                  ].map(([key, label, availableLabel]) => (
-                    <label key={key}>
-                      {label}
-                      <input
-                        disabled={selectedTotals[key] === 0}
-                        max="120"
-                        min="0"
-                        onChange={(event) =>
-                          updateCount(setContentCounts, key, event.target.value)
-                        }
-                        type="number"
-                        value={contentCounts[key]}
-                      />
-                      <small>
-                        {selectedTotals[key]} de {documentTotals[key]} {availableLabel}{" "}
-                        seleccionados
-                      </small>
-                    </label>
-                  ))}
-                </div>
-              </section>
+                <section className="distribution-section">
+                  <div className="distribution-heading"><div>
+                    <h2>1. ¿Cuántas preguntas quieres generar?</h2>
+                    <p>Elige el total del test. Después podrás repartirlo a tu gusto.</p>
+                  </div></div>
+                  <label className="question-total-input">Número de preguntas
+                    <input type="number" min="1" max="120" value={questionTotal} onChange={(event) => {
+                      const total = Math.min(120, Math.max(0, Math.floor(Number(event.target.value) || 0)));
+                      setQuestionTotal(total);
+                      setDifficultyCounts(distribute(total, ["P", "F", "D"]));
+                    }} />
+                    <small>Entre 1 y 120. Si cambias el total, los repartos se recalculan por igual.</small>
+                  </label>
+                </section>
 
-              <section className="distribution-section">
-                <div className="distribution-heading">
-                  <div>
-                    <h2>Preguntas por dificultad</h2>
-                    <p>Indica cuántas preguntas quieres de cada nivel.</p>
+                <section className="distribution-section">
+                  <div className="distribution-heading"><div>
+                    <h2>2. ¿Cómo quieres repartirlas?</h2>
+                    <p>Indica cuántas preguntas quieres de cada contenido. Un 0 lo deja fuera del test.</p>
+                  </div></div>
+                  <div className="content-mode-options" role="radiogroup" aria-label="Contenido de las preguntas">
+                    {hasComplete && <label className={effectiveMode === "complete" ? "selected" : ""}>
+                      <input type="radio" name="content-mode" checked={effectiveMode === "complete"} onChange={() => setContentMode("complete")} />
+                      <span><strong>Manual o tema completo</strong><small>Preguntas sobre el conjunto de cada manual o tema seleccionado.</small></span>
+                    </label>}
+                    {hasChapters && <label className={effectiveMode === "chapters" ? "selected" : ""}>
+                      <input type="radio" name="content-mode" checked={effectiveMode === "chapters"} onChange={() => setContentMode("chapters")} />
+                      <span><strong>Por capítulos</strong><small>Elige cuántas preguntas dedicar a cada capítulo seleccionado.</small></span>
+                    </label>}
+                    {hasComplete && hasChapters && <label className={effectiveMode === "mixed" ? "selected" : ""}>
+                      <input type="radio" name="content-mode" checked={effectiveMode === "mixed"} onChange={() => setContentMode("mixed")} />
+                      <span><strong>Combinar ambos</strong><small>Reparte entre contenidos completos y capítulos concretos.</small></span>
+                    </label>}
                   </div>
-                  <strong>{difficultyTotal}</strong>
-                </div>
-                <div className="count-grid difficulty-counts">
-                  {[
-                    ["P", "P", "Principiante"],
-                    ["F", "F", "Fácil"],
-                    ["D", "D", "Difícil"],
-                  ].map(([key, label, detail]) => (
-                    <label key={key}>
-                      <span className={`difficulty-letter difficulty-${key}`}>{label}</span>
-                      <input
-                        max="120"
-                        min="0"
-                        onChange={(event) =>
-                          updateCount(setDifficultyCounts, key, event.target.value)
-                        }
-                        type="number"
-                        value={difficultyCounts[key]}
-                      />
-                      <small>{detail}</small>
-                    </label>
-                  ))}
-                </div>
-                <div className="difficulty-presets">
-                  <span>Repartos predefinidos</span>
-                  <div>
-                    <button
-                      disabled={contentTotal === 0}
-                      onClick={() => applyDifficultyPreset(["P", "F"])}
-                      type="button"
-                    >
-                      Conseguir P
-                      <small>P + F</small>
-                    </button>
-                    <button
-                      disabled={contentTotal === 0}
-                      onClick={() => applyDifficultyPreset(["F", "D"])}
-                      type="button"
-                    >
-                      Conseguir F
-                      <small>F + D</small>
-                    </button>
-                    <button
-                      disabled={contentTotal === 0}
-                      onClick={() => applyDifficultyPreset(["P", "F", "D"])}
-                      type="button"
-                    >
-                      Conseguir D
-                      <small>P + F + D</small>
-                    </button>
+                  {!hasChapters && <p className="allocation-help">Para repartir por capítulos, selecciónalos en el paso anterior.</p>}
+                  <div className="allocation-toolbar">
+                    <strong>{contentTotal} de {questionTotal} preguntas asignadas</strong>
+                    <button type="button" className="secondary-button" onClick={() => setDocumentCounts(distribute(questionTotal, targetDocuments.map((document) => document.id)))}>Repartir por igual</button>
                   </div>
+                  <div className="document-allocations">
+                    {targetDocuments.map((document) => <label className="document-allocation" key={document.id}>
+                      <span><small>{{ MANUAL: "Manual completo", TEMA: "Tema completo", CAPITULO: "Capítulo" }[document.content_type]}</small><strong>{document.display_title || document.original_filename}</strong></span>
+                      <span className="allocation-input"><input aria-label={`Preguntas de ${document.display_title || document.original_filename}`} type="number" min="0" max={questionTotal} value={documentCounts[document.id] || 0} onChange={(event) => updateCount(setDocumentCounts, document.id, event.target.value)} /><small>preguntas</small></span>
+                    </label>)}
+                  </div>
+                  <p className={`allocation-status ${contentTotal === questionTotal ? "complete" : ""}`} role="status">{remainingText(contentTotal)}</p>
+                  <button type="button" className="secondary-button" onClick={() => setStep(1)}>Cambiar contenidos seleccionados</button>
+                </section>
+
+                <section className="distribution-section">
+                  <div className="distribution-heading"><div>
+                    <h2>3. Elige la dificultad</h2>
+                    <p>Reparte las {questionTotal} preguntas entre estos niveles. Puedes combinar varios o usar solo uno.</p>
+                  </div></div>
+                  <div className="count-grid difficulty-counts">
+                    {[["P", "Principiante"], ["F", "Fácil"], ["D", "Difícil"]].map(([key, label]) => <label key={key}>
+                      <span>{label}</span>
+                      <input type="number" min="0" max={questionTotal} value={difficultyCounts[key]} onChange={(event) => updateCount(setDifficultyCounts, key, event.target.value)} />
+                      <small>preguntas</small>
+                    </label>)}
+                  </div>
+                  <div className="difficulty-presets"><span>Repartir automáticamente</span><div>
+                    <button type="button" onClick={() => applyDifficultyPreset(["P", "F"])}>Conseguir Principiante<small>P + F</small></button>
+                    <button type="button" onClick={() => applyDifficultyPreset(["F", "D"])}>Conseguir Fácil<small>F + D</small></button>
+                    <button type="button" onClick={() => applyDifficultyPreset(["P", "F", "D"])}>Conseguir Difícil<small>P + F + D</small></button>
+                  </div></div>
+                  <p className={`allocation-status ${difficultyTotal === questionTotal ? "complete" : ""}`} role="status">{difficultyTotal} de {questionTotal} preguntas con dificultad asignada. {remainingText(difficultyTotal)}</p>
+                </section>
+
+                <div className="generation-summary" aria-live="polite">
+                  <h2>Resumen de las preguntas</h2>
+                  <p className="summary-total">Cantidad total: <strong>{questionTotal} {questionTotal === 1 ? "pregunta" : "preguntas"}</strong></p>
+                  <div className="summary-columns">
+                    <div>
+                      <h3>Sobre qué vas a preguntar</h3>
+                      <p className="summary-content-count">{[["MANUAL", "manual", "manuales"], ["TEMA", "tema", "temas"], ["CAPITULO", "capítulo", "capítulos"]].map(([type, singular, plural]) => {
+                        const count = targetDocuments.filter((document) => document.content_type === type && documentCounts[document.id] > 0).length;
+                        return count ? `${count} ${count === 1 ? singular : plural}` : null;
+                      }).filter(Boolean).join(" · ")}</p>
+                      {contentTotal > 0 && <details className="summary-content-details">
+                      <summary>Ver contenidos y cantidades</summary>
+                      <dl className="summary-breakdown summary-content-list">
+                        {targetDocuments.filter((document) => documentCounts[document.id] > 0).map((document) => (
+                          <div key={document.id}>
+                            <dt><small>{{ MANUAL: "Manual completo", TEMA: "Tema completo", CAPITULO: "Capítulo" }[document.content_type]}</small>{document.display_title || document.original_filename}</dt>
+                            <dd>{documentCounts[document.id]} {documentCounts[document.id] === 1 ? "pregunta" : "preguntas"}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                      </details>}
+                      {contentTotal === 0 && <p>Aún no has asignado preguntas al contenido.</p>}
+                    </div>
+                    <div>
+                      <h3>Cómo será la dificultad</h3>
+                      <dl className="summary-breakdown">
+                        {[["P", "Principiante"], ["F", "Fácil"], ["D", "Difícil"]].map(([key, label]) => (
+                          <div key={key}><dt>{label}</dt><dd>{difficultyCounts[key]} {difficultyCounts[key] === 1 ? "pregunta" : "preguntas"}</dd></div>
+                        ))}
+                      </dl>
+                    </div>
+                  </div>
+                  {!totalsMatch && <p className="summary-pending">Revisa el reparto antes de generar: {contentTotal !== questionTotal && `Contenido: ${remainingText(contentTotal)} `}{difficultyTotal !== questionTotal && `Dificultad: ${remainingText(difficultyTotal)} `}{questionTotal < 1 && "Elige al menos 1 pregunta."}</p>}
                 </div>
-              </section>
-
-              <div className={`totals-check ${totalsMatch ? "valid" : "invalid"}`}>
-                <span>Total por contenido: <strong>{contentTotal}</strong></span>
-                <span>Total por dificultad: <strong>{difficultyTotal}</strong></span>
-                <small>
-                  {totalsMatch
-                    ? "El reparto es correcto."
-                    : "Ambos totales deben coincidir y estar entre 1 y 120."}
-                </small>
-              </div>
-
-              <button
-                className="secondary-button"
-                disabled={selectedDocumentIds.length === 0}
-                onClick={configureFullExam}
-                type="button"
-              >
-                Configurar simulacro completo (88)
-              </button>
 
               <button
                 className="primary-button large-button"

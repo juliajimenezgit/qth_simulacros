@@ -19,6 +19,7 @@ router.use(requireAuth);
 const generateSchema = z.object({
   testName: z.string().trim().max(120).optional(),
   selectedDocumentIds: z.array(z.string().uuid()).min(1).max(200),
+  documentCounts: z.record(z.string().uuid(), z.number().int().min(0).max(120)).optional(),
   contentCounts: z.object({
     MANUAL: z.number().int().min(0).max(120),
     TEMA: z.number().int().min(0).max(120),
@@ -32,6 +33,10 @@ const generateSchema = z.object({
 }).superRefine((data, context) => {
   const contentTotal = Object.values(data.contentCounts).reduce((sum, value) => sum + value, 0);
   const difficultyTotal = Object.values(data.difficultyCounts).reduce((sum, value) => sum + value, 0);
+  if (data.documentCounts && (Object.keys(data.documentCounts).some((id) => !data.selectedDocumentIds.includes(id)) || Object.values(data.documentCounts).reduce((sum, count) => sum + count, 0) !== contentTotal)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "El reparto por documento debe coincidir con el total de preguntas" });
+  }
+
   if (contentTotal < 1 || contentTotal > 120 || contentTotal !== difficultyTotal) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
