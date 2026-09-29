@@ -61,3 +61,38 @@ export function stripLegacyCeisPrefix(question) {
     )
     .trim();
 }
+
+// The section («2.3.1. Especificaciones», «Según el apartado 3.2 El proceso,») belongs to the
+// explanation and the reference, never to the question text.
+const SECTION_NUMBER = String.raw`\d+(?:\.\d+)*\.?`;
+const LEADING_SECTION_REFERENCE = new RegExp(
+  String.raw`^(?:(?:seg[uú]n|conforme\s+a|de\s+acuerdo\s+con)\s+(?:el\s+)?(?:manual\b[^,¿?]{0,160},\s*)?(?:el\s+)?|en\s+el\s+)?apartado\s+${SECTION_NUMBER}(?:\s*[^,¿?]{0,120}?)?,\s*`,
+  "iu",
+);
+const LEADING_SECTION_HEADING = new RegExp(String.raw`^${SECTION_NUMBER}\s+[^.?¿!:]{1,120}?[.:]\s+`, "u");
+
+const comparable = value => normalizeUnicode(String(value || ""))
+  .normalize("NFD").replace(/\p{Diacritic}/gu, "").toLocaleLowerCase("es-ES")
+  .replace(new RegExp(`^${SECTION_NUMBER}\\s*`, "u"), "").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+// A bare heading before the question («Gases. ¿…?»): at most four words and no verb, so a
+// real statement («Un incendio se declara en un sótano. ¿…?») is never removed.
+const SENTENCE_VERB = /\b(?:es|son|era|fue|se|esta|estan|hay|ha|han|tiene|tienen|debe|deben|puede|pueden|llega|llegan|produce|declara|encuentra|observa|recibe|dispone|realiza|actua|trabaja)\b/u;
+const LEADING_HEADING = /^([^.?¿!:\d]{1,80})\.\s+(?=¿)/u;
+
+export function stripSectionReference(question, sectionTitle = "") {
+  const original = String(question || "").trim();
+  let text = original;
+  for (let previous = ""; previous !== text;) {
+    previous = text;
+    text = text.replace(LEADING_SECTION_REFERENCE, "").replace(LEADING_SECTION_HEADING, "").trim();
+    const heading = text.match(LEADING_HEADING)?.[1];
+    if (heading) {
+      const words = comparable(heading);
+      const isSection = words && words === comparable(sectionTitle);
+      const isShortHeading = words.split(" ").length <= 4 && !SENTENCE_VERB.test(words);
+      if (isSection || isShortHeading) text = text.slice(text.match(LEADING_HEADING)[0].length).trim();
+    }
+  }
+  if (text === original) return original;
+  return text.replace(/^(¿?\s*)(\p{Ll})/u, (_, lead, letter) => `${lead}${letter.toLocaleUpperCase("es-ES")}`);
+}

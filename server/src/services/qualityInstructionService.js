@@ -1,3 +1,4 @@
+import { loadCuratedInstructions } from "../utils/curatedInstructions.js";
 import { query } from "../db/pool.js";
 import { HttpError } from "../utils/errors.js";
 import { toVectorLiteral } from "../utils/vector.js";
@@ -85,6 +86,18 @@ export async function deleteQualityInstruction(id) {
 }
 
 export async function retrieveQualityInstructions({ difficulty, contextChunks, limit = 6 }) {
+  const curated = await loadCuratedInstructions(difficulty);
+  if (curated !== null) {
+    const { rows } = await query(
+      `select id from quality_instructions
+       where active = true and embedding is not null
+         and title not like '[PRIVADA] %'
+         and (difficulty is null or difficulty = $1)
+       limit 1`, [difficulty],
+    );
+    if (!rows.length) return curated;
+  }
+
   const contextPreview = contextChunks
     .slice(0, 4)
     .map((chunk) => `${chunk.section || "Contenido"}: ${chunk.text.slice(0, 500)}`)
@@ -98,10 +111,11 @@ export async function retrieveQualityInstructions({ difficulty, contextChunks, l
      from quality_instructions
      where active = true
        and embedding is not null
+       and ($4::boolean = false or title not like '[PRIVADA] %')
        and (difficulty is null or difficulty = $2)
      order by embedding <=> $1::vector
      limit $3`,
-    [toVectorLiteral(embedding), difficulty, limit],
+    [toVectorLiteral(embedding), difficulty, limit, curated !== null],
   );
-  return rows;
+  return [...(curated || []), ...rows];
 }

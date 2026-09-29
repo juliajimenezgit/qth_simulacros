@@ -1,14 +1,16 @@
+import { loadCuratedInstructions } from "../utils/curatedInstructions.js";
 import { query } from "../db/pool.js";
 import { createEmbedding } from "./openaiService.js";
 import { toVectorLiteral } from "../utils/vector.js";
 
 const sourceLimits = {
   QUALITY_GUIDE: 5,
-  ANNOTATED_GUIDE: 5,
-  OFFICIAL_EXAM: 4,
+  ANNOTATED_GUIDE: 2,
+  OFFICIAL_EXAM: 1,
 };
 
 export async function retrievePrivateQualityKnowledge({ difficulty, contextChunks }) {
+  const curated = await loadCuratedInstructions(difficulty);
   try {
     const preview = contextChunks.map((chunk) => chunk.text).join("\n").slice(0, 6000);
     const embedding = await createEmbedding(
@@ -18,6 +20,7 @@ export async function retrievePrivateQualityKnowledge({ difficulty, contextChunk
     const grouped = {};
 
     for (const [sourceType, limit] of Object.entries(sourceLimits)) {
+      if (sourceType === "QUALITY_GUIDE" && curated !== null) continue;
       const { rows } = await query(
         `select qkc.text, qkc.page, qkc.section, qsd.filename
          from quality_knowledge_chunks qkc
