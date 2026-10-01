@@ -1,6 +1,8 @@
-import { Download, FileText, Plus, Save, Search, Trash2 } from "lucide-react";
+import { Download, Plus, Save, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { testDifficultyLabel } from "../utils/testDifficulty.js";
+import { QUESTION_TYPE_LABELS } from "../utils/questionTypes.js";
+import { explanationWithoutReference, shortReference } from "../utils/reference.js";
+import { QUESTION_LEVELS, testDifficultyLabel } from "../utils/testDifficulty.js";
 import { api, getToken } from "../services/api.js";
 
 const emptyEdit = {
@@ -27,11 +29,6 @@ const exportFormats = [
   ["json", "JSON (.json)"],
 ];
 
-const difficultyLabels = {
-  PRINCIPIANTE: "P",
-  FACIL: "F",
-  DIFICIL: "D",
-};
 
 export default function QuestionReview({
   initialDocumentId = "",
@@ -93,7 +90,9 @@ export default function QuestionReview({
   function startCreate() {
     const document = documents.find(item => item.id === documentId)
       || documents.find(item => selectedTest?.document_ids?.includes(item.id));
-    setDraft({ ...emptyEdit, documentId: document?.id || "", source_title: document?.display_title || document?.original_filename || "" });
+    // A new question starts with a difficulty that fits its test: an Élite test has no P questions.
+    const difficulty = selectedTest?.test_difficulty === "ELITE" ? "FACIL" : emptyEdit.difficulty;
+    setDraft({ ...emptyEdit, difficulty, documentId: document?.id || "", source_title: document?.display_title || document?.original_filename || "" });
     setEditingId(null);
     setEditorError("");
     setNotice("");
@@ -302,7 +301,8 @@ export default function QuestionReview({
                 <>
                   <div className="question-card-header">
                     <div>
-                      <span>{difficultyLabels[item.difficulty] || item.difficulty}</span>
+                      <span className={`question-level difficulty-${QUESTION_LEVELS[item.difficulty]?.short}`}>{QUESTION_LEVELS[item.difficulty]?.label || item.difficulty}</span>
+                      {QUESTION_TYPE_LABELS[item.question_type] && <span className="question-type">{QUESTION_TYPE_LABELS[item.question_type]}</span>}
                       <strong className="test-name">{item.test_name || "Sin test asignado"}</strong>
                     </div>
                     <small>{new Date(item.created_at).toLocaleString("es-ES")}</small>
@@ -324,15 +324,12 @@ export default function QuestionReview({
                   </ol>
                   <div className="answer-summary">
                     <strong>Respuesta correcta: {item.correct_answer}</strong>
-                    <p>{item.explanation}</p>
+                    <p>
+                      {item.reference && <span className="answer-reference">{shortReference(item.reference)} - </span>}
+                      {item.reference ? explanationWithoutReference(item.explanation) : item.explanation}
+                    </p>
                   </div>
                   {item.is_manual && <p className="muted-text">Manual: {item.source_title} · Tema: {item.topic} · Capítulo: {item.chapter}</p>}
-                  <aside className="question-source">
-                    <div className="source-reference">
-                      <FileText size={16} />
-                      <span><small>Referencia concreta</small><strong>{item.reference}</strong></span>
-                    </div>
-                  </aside>
                   <footer>
                     <div>
                       <button
@@ -449,9 +446,7 @@ function QuestionEditor({ draft, onCancel, onChange, onSave, creating = false, d
             disabled={saving}
             value={draft.difficulty}
           >
-            <option value="PRINCIPIANTE">P — Principiante</option>
-            <option value="FACIL">F — Fácil</option>
-            <option value="DIFICIL">D — Difícil</option>
+            {Object.entries(QUESTION_LEVELS).map(([value, { label }]) => <option key={value} value={value}>{label}</option>)}
           </select>
         </label>
       </div>

@@ -17,6 +17,14 @@ let balanceWrites;
 let statements;
 let testInsert;
 let audited = 0;
+// The fragment where the reviewer found the answer (null: the model's one).
+let auditSource = null;
+// PDFs of the M1 syllabus: manual → theme → chapter.
+const SOURCES = {
+  manual: { content_type: 'MANUAL', original_filename: 'M1-Incendios-v6-00-completo.pdf' },
+  theme: { content_type: 'TEMA', original_filename: 'M1-Incendios-v6-01-teoriaFuego.pdf' },
+  chapter: { content_type: 'CAPITULO', original_filename: 'M1-Incendios-v6-01-teoriaFuego-cap1.pdf' },
+};
 let auditFormats = null;
 // A realistic mix within the caps: INCORRECTA under 25%, Todas/Ninguna under 15%.
 const DEFAULT_FORMATS = ['DIRECTA', 'INCORRECTA', 'CIFRA', 'COMPARACION', 'TODAS_NINGUNA', 'CLASIFICACION', 'DIRECTA', 'INCORRECTA', 'CORRECTA', 'CIFRA'];
@@ -26,11 +34,13 @@ const chunks = Array.from({ length: 60 }, (_, index) => ({
   id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
   text: `Contenido evaluable ${index}`, page: index + 1,
 }));
-mock.module('../src/config/env.js', { namedExports: { env: { questionSimilarityThreshold: 0.13 } } });
+// One call per attempt (parts of 8) unless a test asks for parallel parts.
+const env = { questionSimilarityThreshold: 0.13, generationPartSize: 8 };
+mock.module('../src/config/env.js', { namedExports: { env } });
 mock.module('../src/db/pool.js', { namedExports: {
   query: async (sql, params) => {
     statements.push(sql);
-    if (sql.includes('select id, content_type')) return { rows: params[0].map(id => ({ id, content_type: 'TEMA' })) };
+    if (sql.includes('select id, content_type')) return { rows: params[0].map(id => ({ id, ...(SOURCES[id] || { content_type: 'TEMA', original_filename: `${id}.pdf` }) })) };
     if (sql.includes('insert into question_sets')) {
       testInsert = { sql, params };
       return { rows: [{ id: 'test', name: 'Prueba', test_difficulty: params[5] }] };
@@ -86,7 +96,7 @@ mock.module('../src/services/openaiService.js', { namedExports: {
 } });
 mock.module('../src/services/questionAuditService.js', { namedExports: {
   // Formats rotate across the whole test, like a real mix, so the per-format caps are not hit by the mock.
-  auditCandidates: async candidates => candidates.map(candidate => ({ errors: candidate.question.explanation === 'Explicación sin evidencia' ? ['EXPLICACION_INSUFICIENTE'] : [], format: (auditFormats || DEFAULT_FORMATS)[audited++ % (auditFormats || DEFAULT_FORMATS).length] })),
+  auditCandidates: async candidates => candidates.map(candidate => ({ errors: candidate.question.explanation === 'Explicación sin evidencia' ? ['EXPLICACION_INSUFICIENTE'] : [], format: (auditFormats || DEFAULT_FORMATS)[audited++ % (auditFormats || DEFAULT_FORMATS).length], sourceChunkId: auditSource })),
 } });
 mock.module('../src/services/qualityInstructionService.js', { namedExports: {
   retrieveQualityInstructions: async () => {
@@ -131,8 +141,8 @@ test('uses spare candidates to finish 25 unique questions despite rejected dupli
   assert.match(chunkQueries[0].sql, /order by coalesce\(usage.question_count, 0\)/);
   assert.deepEqual(embeddingBatches.map(batch => batch.length), [8, 8, 7, 4]);
   assert.match(prompts[3], /Numero de preguntas solicitadas: 4/);
-  // A shrinking batch must continue after the previous context, not revisit page 37.
-  assert.match(prompts[3], /FRAGMENTO 1 \| id=.* \| pagina=55 \|/);
+  // A shrinking batch must continue after the previous context (three windows of 10 fragments), not revisit earlier pages.
+  assert.match(prompts[3], /FRAGMENTO 1 \| id=.* \| pagina=31 \|/);
 });
 
 test('still rejects an exhausted source instead of accepting duplicates', async () => {
@@ -164,7 +174,7 @@ test('feeds the matched historical question back into the next attempt', async (
   assert.match(prompts[1], /Coincide con: Pregunta histórica sobre la presión/);
   assert.match(prompts[0], /Cambiar palabras.*NO crea una pregunta nueva/);
   assert.match(historyQueries[0].sql, /source_chunk_id = any\(\$3::uuid\[\]\)/);
-  assert.deepEqual(historyQueries[0].params, ['document', 'owner', chunks.slice(0, 12).map(chunk => chunk.id), 'test']);
+  assert.deepEqual(historyQueries[0].params, ['document', 'owner', chunks.slice(0, 8).map(chunk => chunk.id), 'test']);
   // Questions of this test come first in the exclusion list, from any document.
   assert.match(historyQueries[0].sql, /document_id = \$1 or question_set_id = \$4/);
   // Inside a test, duplicates are searched across the whole test, not the document history.
@@ -357,4 +367,105 @@ test('exports manual wording, explanation and source metadata without automatic 
   assert.equal(row.Capitulo, 'Capítulo propio');
   assert.equal(row.Correcta, 'C');
   assert.equal(row.Nivel, 'F');
+});
+
+test('the model writes in the teacher\'s order and the correct answer becomes an option before shuffling', async () => {
+  const { fromTeacherOrder } = await import('../src/services/questionService.js');
+  const converted = fromTeacherOrder({ idea: 'El oxígeno del aire', question_type: 'LITERAL', question: '¿Qué porcentaje de oxígeno tiene el aire?',
+    correct_option: '21 %.', distractors: ['19 %.', '23 %.', '25 %.'], explanation: 'El aire tiene un 21 % de oxígeno.' });
+  assert.deepEqual(
+    [converted.option_a, converted.option_b, converted.option_c, converted.option_d, converted.correct_answer],
+    ['21 %.', '19 %.', '23 %.', '25 %.', 'A'],
+  );
+  assert.equal('idea' in converted || 'distractors' in converted, false);
+  assert.equal(converted.question_type, 'LITERAL');
+  // The old format still works.
+  const old = { question: 'x', option_a: 'a', correct_answer: 'B' };
+  assert.equal(fromTeacherOrder(old), old);
+});
+
+test('reviews only the candidates still needed and the next one only after a rejection', async () => {
+  reset([[question('Primera candidata válida'), question('Segunda candidata válida'), question('Tercera candidata válida'), question('Cuarta candidata válida')]]);
+  await generateQuestions({ ...input, count: 1 });
+  // One question was missing: one review, not four.
+  assert.equal(audited, 1);
+
+  reset([[{ ...question('Candidata rechazada en la revisión'), explanation: 'Explicación sin evidencia' }, question('Candidata de reserva aprobada'), question('Otra candidata que no hace falta revisar')]]);
+  const result = await generateQuestions({ ...input, count: 1 });
+  assert.equal(audited, 2);
+  assert.match(result[0].question, /reserva aprobada/);
+});
+
+test('a candidate outside the teachers\' mix of types is discarded before paying for its review', async () => {
+  reset([[{ ...question('Pregunta conceptual que ya no cabe'), question_type: 'CONCEPTUAL' }, { ...question('Pregunta literal que falta'), question_type: 'LITERAL' }]]);
+  const targets = { LITERAL: 1, CONCEPTUAL: 0, CLASIFICACION: 0, COMPARACION: 0, APLICACION_PRACTICA: 0, CALCULO: 0, DETALLE_DIFICIL: 0, RELACION_CONCEPTOS: 0 };
+  const typeState = new Map();
+  const result = await generateQuestions({ ...input, count: 1, typeTargets: targets, typeState });
+  assert.match(result[0].question, /literal que falta/);
+  assert.equal(audited, 1);
+  assert.equal(typeState.get('LITERAL'), 1);
+});
+
+test('a retry is told why its candidates failed without the whole review', async () => {
+  const { compactFeedback } = await import('../src/services/questionService.js');
+  const details = ['A', 'B', 'C', 'D'].map(letter => ({ letter, evidence: 'Una cita muy larga del manual '.repeat(10), reason: `Motivo de ${letter}` }));
+  assert.deepEqual(compactFeedback({ question: 'Pregunta', errors: ['DESCARTABLE_SIN_SABER_C', 'EXPLICACION_INSUFICIENTE'], details }),
+    { question: 'Pregunta', errors: ['DESCARTABLE_SIN_SABER_C', 'EXPLICACION_INSUFICIENTE'], details: [{ opcion: 'C', motivo: 'Motivo de C' }] });
+  // Word counts are kept: the model cannot fix a length it does not see.
+  const lengths = [{ palabras_por_opcion: { A: 19, B: 6, C: 7, D: 8 }, maximo_diferencia: 5 }];
+  assert.deepEqual(compactFeedback({ question: 'Pregunta', errors: ['OPCIONES_LONGITUD_DESIGUAL'], details: lengths }).details, lengths);
+  assert.deepEqual(compactFeedback({ question: 'Pregunta', errors: ['NIVEL_NO_ADECUADO'], details }), { question: 'Pregunta', errors: ['NIVEL_NO_ADECUADO'] });
+});
+
+test('an attempt is written in parallel parts of four, each on its own fragments', async () => {
+  env.generationPartSize = 4;
+  try {
+    reset([[question('Primera parte, primera'), question('Primera parte, segunda')], [question('Segunda parte, primera'), question('Segunda parte, segunda')]]);
+    const result = await generateQuestions({ ...input, count: 4 });
+    assert.equal(result.length, 4);
+    // 8 candidates in two calls of 4, sent at once.
+    assert.equal(prompts.length, 2);
+    assert.ok(prompts.every(prompt => /Numero de preguntas solicitadas: 4/.test(prompt)));
+    const firstFragment = prompt => prompt.match(/FRAGMENTO 1 \| id=([^ ]+)/)[1];
+    assert.notEqual(firstFragment(prompts[0]), firstFragment(prompts[1]));
+  } finally {
+    env.generationPartSize = 8;
+  }
+});
+
+test('the distractor guide and the word count are inside the steps where the model writes the options', async () => {
+  reset([[question('Pregunta para ver las instrucciones')]]);
+  await generateQuestions(input);
+  const prompt = prompts[0];
+  const step6 = prompt.slice(prompt.indexOf('6. Crea después los tres distractores'), prompt.indexOf('7. Antes de responder'));
+  assert.match(step6, /correct_option_words − 2 y correct_option_words \+ 2 palabras/);
+  assert.match(step6, /Un buen distractor|un distractor no debe ser absurdo, pero tampoco discutible/i);
+  // The guide is said once, where it is applied.
+  assert.equal(prompt.split('un distractor no debe ser absurdo, pero tampoco discutible').length - 1, 1);
+  assert.match(prompt, /7\. Antes de responder, comprueba las cuatro opciones\. Cuenta las palabras/);
+  assert.match(prompt, /Como máximo 12 palabras/);
+});
+
+test('questions come from the selected manual, theme or chapter, never from a PDF and another that contains it', async () => {
+  const user = { id: 'owner', role: 'ADMIN' };
+  const one = (id, type) => ({ user, selectedDocumentIds: [id], contentCounts: { MANUAL: 0, TEMA: 0, CAPITULO: 0, [type]: 1 }, difficultyCounts: { P: 0, F: 1, D: 0 } });
+  // A chapter alone is a valid source.
+  reset([[question('Pregunta del capítulo')]]);
+  assert.equal((await generateConfiguredQuestions(one('chapter', 'CAPITULO'))).questions.length, 1);
+  // A theme together with its own chapter is rejected before generating anything.
+  reset([[question('No debería generarse')]]);
+  await assert.rejects(generateConfiguredQuestions({ user, selectedDocumentIds: ['theme', 'chapter'],
+    contentCounts: { MANUAL: 0, TEMA: 1, CAPITULO: 1 }, difficultyCounts: { P: 0, F: 2, D: 0 } }), { status: 400, message: /ya está incluido en otro/ });
+  assert.equal(prompts.length, 0);
+});
+
+test('the saved reference uses the page of the fragment where the answer was found', async () => {
+  reset([[question('Pregunta con el fragmento vecino')]]);
+  auditSource = chunks[1].id;
+  try {
+    const [saved] = await generateQuestions(input);
+    assert.equal(saved.reference, sourceReference({ original_filename: 'Hidraulica.pdf' }, chunks[1]));
+  } finally {
+    auditSource = null;
+  }
 });

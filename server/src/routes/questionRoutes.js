@@ -12,6 +12,8 @@ import {
 } from "../services/questionService.js";
 import { getExportFormat, listExportFormats } from "../services/exportService.js";
 import { asyncHandler, HttpError } from "../utils/errors.js";
+import { difficultyCountsFor, TEST_LEVEL_NAMES, testLevelName } from "../utils/testLevels.js";
+import { QUESTION_TYPES } from "../utils/questionTypes.js";
 
 const router = Router();
 
@@ -25,7 +27,6 @@ router.post(
 );
 
 const generateSchema = z.object({
-  testDifficulty: z.enum(["PRINCIPIANTE", "FACIL", "DIFICIL", "CUSTOM"]).nullable().optional(),
   testName: z.string().trim().max(120).optional(),
   selectedDocumentIds: z.array(z.string().uuid()).min(1).max(200),
   documentCounts: z.record(z.string().uuid(), z.number().int().min(0).max(120)).optional(),
@@ -34,14 +35,14 @@ const generateSchema = z.object({
     TEMA: z.number().int().min(0).max(120),
     CAPITULO: z.number().int().min(0).max(120),
   }),
-  difficultyCounts: z.object({
-    P: z.number().int().min(0).max(120),
-    F: z.number().int().min(0).max(120),
-    D: z.number().int().min(0).max(120),
-  }),
+  // Questions per test level as the app shows them (Principiante, Élite, Aleatorio); the server turns
+  // them into the internal difficulties P, F and D.
+  levelCounts: z.object(Object.fromEntries(TEST_LEVEL_NAMES.map((name) => [name, z.number().int().min(0).max(120)]))),
+  // The question types the test may have (all of them: the teachers' mix).
+  questionTypes: z.array(z.enum(QUESTION_TYPES)).min(1).optional(),
 }).superRefine((data, context) => {
   const contentTotal = Object.values(data.contentCounts).reduce((sum, value) => sum + value, 0);
-  const difficultyTotal = Object.values(data.difficultyCounts).reduce((sum, value) => sum + value, 0);
+  const difficultyTotal = Object.values(data.levelCounts).reduce((sum, value) => sum + value, 0);
   if (data.documentCounts && (Object.keys(data.documentCounts).some((id) => !data.selectedDocumentIds.includes(id)) || Object.values(data.documentCounts).reduce((sum, count) => sum + count, 0) !== contentTotal)) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "El reparto por documento debe coincidir con el total de preguntas" });
   }
@@ -52,7 +53,12 @@ const generateSchema = z.object({
       message: "Los repartos deben sumar la misma cantidad, entre 1 y 120 preguntas",
     });
   }
-});
+}).transform(({ levelCounts, ...data }) => ({
+  ...data,
+  levelCounts,
+  difficultyCounts: difficultyCountsFor(levelCounts),
+  testDifficulty: testLevelName(levelCounts),
+}));
 
 const updateSchema = z.object({
   question: z.string().min(10).optional(),

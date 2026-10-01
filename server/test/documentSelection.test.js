@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { toggleDocumentSelection } from '../../client/src/utils/documentSelection.js';
+import { selectedAncestor, toggleSource } from '../../client/src/utils/documentSelection.js';
 const doc = (id, content_type, original_filename, status = 'AVAILABLE') => ({id, content_type, original_filename, status});
 const docs = [
   doc('m1', 'MANUAL', 'M1-Incendios-v6-00-completo.pdf'),
@@ -12,30 +12,20 @@ const docs = [
   doc('processing', 'CAPITULO', 'M1-Incendios-v6-01-teoriaFuego-cap3.pdf', 'PROCESSING'),
   doc('unknown', 'TEMA', 'Desconocido.pdf'),
 ];
-test('a manual selects all available descendants across the full library', () => {
-  assert.deepEqual(toggleDocumentSelection(docs, [], docs[0]), ['m1', 't1', 'c1', 't2', 'c2']);
+test('the generator uses exactly what is selected and never a PDF together with the one that contains it', () => {
+  // A manual alone: its themes and chapters are not added.
+  assert.deepEqual(toggleSource(docs, [], docs[0]), ['m1']);
+  // A chapter alone.
+  assert.deepEqual(toggleSource(docs, [], docs[2]), ['c1']);
+  // Selecting a theme unselects its chapters, which it already includes.
+  assert.deepEqual(toggleSource(docs, ['c1', 'other'], docs[1]).sort(), ['other', 't1']);
+  // A chapter inside a selected theme cannot be selected apart.
+  assert.deepEqual(toggleSource(docs, ['t1'], docs[2]), ['t1']);
+  assert.equal(selectedAncestor(docs, ['m1'], docs[2]).id, 'm1');
+  assert.equal(selectedAncestor(docs, ['t2'], docs[2]), null);
 });
-test('a topic selects only its own chapters without duplicating existing selections', () => {
-  assert.deepEqual(toggleDocumentSelection(docs, ['c1'], docs[1]), ['c1', 't1']);
-});
-test('deselecting a topic removes its branch but preserves the selected manual and siblings', () => {
-  assert.deepEqual(toggleDocumentSelection(docs, ['m1', 't1', 'c1', 't2', 'c2'], docs[1]), ['m1', 't2', 'c2']);
-});
-test('deselecting a chapter preserves its previously selected topic', () => {
-  const selected = toggleDocumentSelection(docs, [], docs[1]);
-  assert.deepEqual(toggleDocumentSelection(docs, selected, docs[2]), ['t1']);
-});
-test('deselecting a chapter preserves both selected ancestors and other branches', () => {
-  const selected = toggleDocumentSelection(docs, [], docs[0]);
-  assert.deepEqual(toggleDocumentSelection(docs, selected, docs[2]), ['m1', 't1', 't2', 'c2']);
-});
-test('deselecting an independent chapter does not select its topic', () => {
-  assert.deepEqual(toggleDocumentSelection(docs, ['c1'], docs[2]), []);
-});
-test('deselecting a manual leaves unrelated documents selected', () => {
-  assert.deepEqual(toggleDocumentSelection(docs, ['m1', 't1', 'c1', 'other'], docs[0]), ['other']);
-});
-test('standalone documents and individual chapters remain independently selectable', () => {
-  assert.deepEqual(toggleDocumentSelection(docs, [], docs[7]), ['unknown']);
-  assert.deepEqual(toggleDocumentSelection(docs, [], docs[2]), ['c1']);
+
+test('documents outside the manual - theme - chapter naming are independent', () => {
+  assert.deepEqual(toggleSource(docs, ['t1'], docs[7]).sort(), ['t1', 'unknown']);
+  assert.equal(selectedAncestor(docs, ['unknown'], docs[2]), null);
 });

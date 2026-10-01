@@ -1,6 +1,8 @@
-import { DISTRACTOR_POLICY, FORMAT_DEFINITIONS, POSITION_POLICY, TEACHER_GENERAL_STYLE, TEACHER_STYLE } from "../utils/questionPolicy.js";
+import { CALCULATION_RULE, CONTESTABLE_CASES, DIFFICULTY_PRINCIPLE, DISTRACTOR_GUIDE, FORMAT_DEFINITIONS, LEVEL_GUIDE, POSITION_POLICY, QUESTION_ANATOMY, TEACHER_GENERAL_STYLE, TEACHER_STYLE } from "../utils/questionPolicy.js";
 import { formatTeacherExamples, loadTeacherExamples, pickTeacherExamples } from "./teacherExamplesService.js";
 import { auditCandidates } from "./questionAuditService.js";
+import { overlappingDocuments } from "../utils/documentHierarchy.js";
+import { batchTypePlan, formatTypePlan, QUESTION_TYPES, QUESTION_TYPE_DEFINITIONS, splitTypePlan, typeErrors, typeSelectionError, typeTargets } from "../utils/questionTypes.js";
 import { rebalanceOptionLengths } from "./questionRepairService.js";
 import {
   createProgress, logAttempt, logQuestionSaved, logRejectionDetail, logTestCompleted, logTestFailed, logTestStarted,
@@ -46,6 +48,26 @@ function normalizeDifficulty(value) {
   }[normalized] || normalized;
 }
 
+// What the generator needs to avoid a rejection again: the reasons, the word counts and the reviewer's reason
+// for the options that failed. The full review (quotes of every option) made each retry thousands of tokens longer.
+export function compactFeedback({ question, errors, details = [] }) {
+  const failed = new Set(errors.map(error => error.match(/_([A-D])$/)?.[1]).filter(Boolean));
+  const compact = details.flatMap(detail => {
+    if (detail.letter) return failed.has(detail.letter) ? [{ opcion: detail.letter, motivo: detail.reason }] : [];
+    return [detail];
+  });
+  return compact.length ? { question, errors, details: compact } : { question, errors };
+}
+
+// The model writes in the teacher's order: idea, stem, correct answer, then distractors. The correct
+// answer goes to A; the options are shuffled when the test is saved (balanceAnswers).
+export function fromTeacherOrder(candidate) {
+  if (!candidate || typeof candidate !== "object" || !("correct_option" in candidate) || !Array.isArray(candidate.distractors)) return candidate;
+  const { correct_option: correct, distractors, idea, ...rest } = candidate;
+  const [b, c, d] = distractors;
+  return { ...rest, option_a: correct, option_b: b, option_c: c, option_d: d, correct_answer: "A" };
+}
+
 const generatedQuestionSchema = z.object({
   question: z.string().min(10),
   option_a: z.string().min(1),
@@ -63,6 +85,7 @@ const generatedQuestionSchema = z.object({
   ),
   source_chunk_id: z.string().uuid(),
   format: z.enum(FORMATS).optional().catch(undefined),
+  question_type: z.enum(QUESTION_TYPES).optional().catch(undefined),
 });
 
 export async function listQuestions(user, filters = {}) {
@@ -191,7 +214,8 @@ function resolveManualFilename(originalFilename) {
   return inferred === originalFilename ? originalFilename : inferred;
 }
 
-export async function generateQuestions({ user, documentId, count, difficulty, testId, coverageState = new Map(), formatState = new Map(), totalCount = count, progress }) {
+// typeState/typeTargets: questions of each type saved in the test and the teachers' mix it must reach (null: no mix).
+export async function generateQuestions({ user, documentId, count, difficulty, testId, coverageState = new Map(), formatState = new Map(), typeState = new Map(), typeTargets: targets = null, allowedTypes = null, totalCount = count, progress }) {
   const document = await assertDocumentAccess(documentId, user);
   if (!document) {
     throw new HttpError(404, "Temario no encontrado");
@@ -231,12 +255,17 @@ export async function generateQuestions({ user, documentId, count, difficulty, t
     const attemptStartedAt = Date.now();
     // Keep alternatives available when the final candidates are rejected.
     const batchSize = Math.min(Math.max((normalizedCount - saved.length) * 2, 4), 8);
-    const contextChunks = pickContextChunks({
-      orderedRows: orderedChunks,
-      count: batchSize,
-      offset: contextOffset,
+    // The batch is written in parallel parts of up to 4 questions, each on its own fragments: one call writing 8
+    // questions took ~20 s of output alone, and the attempts are what a test waits for.
+    const partCount = Math.ceil(batchSize / (env.generationPartSize || 4));
+    const partSizes = Array.from({ length: partCount }, (_, index) =>
+      Math.floor(batchSize / partCount) + (index < batchSize % partCount ? 1 : 0));
+    const partChunks = partSizes.map((size) => {
+      const chunks = pickContextChunks({ orderedRows: orderedChunks, count: size, offset: contextOffset });
+      contextOffset += chunks.length;
+      return chunks;
     });
-    contextOffset += contextChunks.length;
+    const contextChunks = [...new Map(partChunks.flat().map(chunk => [chunk.id, chunk])).values()];
     const [previousTexts, qualityInstructions, privateQualityKnowledge, teacherExamples] = await Promise.all([
       getPreviousQuestionTexts(documentId, user.id, contextChunks.map(chunk => chunk.id), testId),
       retrieveQualityInstructions({ difficulty, contextChunks }),
@@ -244,37 +273,44 @@ export async function generateQuestions({ user, documentId, count, difficulty, t
       loadTeacherExamples(difficulty),
     ]);
     const previousQuestions = [...new Set([...previousTexts, ...saved.map(row => row.question), ...rejectedQuestionTexts.slice(-24)])];
-    const messages = buildPrompt({
-      document,
-      testId,
-      contextChunks,
-      count: batchSize,
-      difficulty,
-      previousQuestions,
-      duplicateFeedback: duplicateFeedback.slice(-16),
-      qualityInstructions,
-      privateQualityKnowledge,
-      // Different teachers' examples in every attempt, so the model sees more of their variety.
-      teacherExamples: pickTeacherExamples(teacherExamples, difficulty),
-      validationFeedback: validationFeedback.slice(-12),
-      coverageSummary: Object.fromEntries(sectionCounts),
-      formatSummary: Object.fromEntries(formatCounts),
-      formatLimitCount,
-      invertedTarget: invertedQuota(formatCounts, formatLimitCount),
-    });
-    logVerbose(`[Generación contexto] documento=${documentId} nivel=${difficulty} reglas=${qualityInstructions.length} fragmentos=${contextChunks.length} caracteres=${messages.reduce((sum, message) => sum + message.content.length, 0)}`);
-    const raw = await createChatJson(
-      messages,
-      Math.min((difficulty === "DIFICIL" ? 0.35 : 0.2) + attempt * 0.04, 0.55),
-    );
-    let parsed;
-    try {
-      parsed = z.object({ questions: z.array(z.unknown()) }).parse(parseModelJson(raw));
-    } catch (error) {
-      console.warn(`  ⚠ ${documentLabel}: el modelo devolvió una respuesta no válida en el intento ${attempt + 1} (${error.message})`);
+    // The types of the whole batch, dealt to the parts so they do not all ask for the same ones.
+    const partPlans = splitTypePlan(targets ? batchTypePlan({ targets, typeCounts: typeState, difficulty, count: batchSize }) : null, partSizes);
+    const temperature = Math.min((difficulty === "DIFICIL" ? 0.35 : 0.2) + attempt * 0.04, 0.55);
+    const responses = await Promise.all(partSizes.map((size, part) => {
+      const messages = buildPrompt({
+        document,
+        testId,
+        contextChunks: partChunks[part],
+        count: size,
+        difficulty,
+        previousQuestions,
+        duplicateFeedback: duplicateFeedback.slice(-16),
+        qualityInstructions,
+        privateQualityKnowledge,
+        // Different teachers' examples in every part and attempt, so the model sees more of their variety.
+        teacherExamples: pickTeacherExamples(teacherExamples, difficulty),
+        validationFeedback: validationFeedback.slice(-8).map(compactFeedback),
+        coverageSummary: Object.fromEntries(sectionCounts),
+        formatSummary: Object.fromEntries(formatCounts),
+        formatLimitCount,
+        invertedTarget: invertedQuota(formatCounts, formatLimitCount),
+        typeGuide: targets ? formatTypePlan(partPlans[part]) : "",
+      });
+      logVerbose(`[Generación contexto] documento=${documentId} nivel=${difficulty} parte=${part + 1}/${partSizes.length} reglas=${qualityInstructions.length} fragmentos=${partChunks[part].length} caracteres=${messages.reduce((sum, message) => sum + message.content.length, 0)}`);
+      return createChatJson(messages, temperature).then((raw) => {
+        try {
+          return z.object({ questions: z.array(z.unknown()) }).parse(parseModelJson(raw)).questions;
+        } catch (error) {
+          console.warn(`  ⚠ ${documentLabel}: el modelo devolvió una respuesta no válida en el intento ${attempt + 1} (${error.message})`);
+          return null;
+        }
+      });
+    }));
+    if (responses.every((questions) => questions === null)) {
       attempt += 1;
       continue;
     }
+    const parsed = { questions: responses.flatMap((questions) => questions || []) };
 
     // Spreading across sections is a preference: in the second half of the attempts it no longer rejects.
     const relaxCoverage = attempt >= Math.floor(maxAttempts / 2);
@@ -294,7 +330,7 @@ export async function generateQuestions({ user, documentId, count, difficulty, t
     };
     const parsedQuestions = [];
     for (const candidate of parsed.questions.slice(0, batchSize)) {
-      const result = generatedQuestionSchema.safeParse(candidate);
+      const result = generatedQuestionSchema.safeParse(fromTeacherOrder(candidate));
       if (!result.success) {
         invalidCount += 1;
         reject(candidate, result.error.issues.map(issue => `ESQUEMA_${issue.path.join(".")}`));
@@ -334,8 +370,12 @@ export async function generateQuestions({ user, documentId, count, difficulty, t
         chunk: sourceChunk, format: questionFormat(question, question.format), sectionCounts, formatCounts, availableSections, count: formatLimitCount, relaxCoverage,
         globalAnswer: hasGlobalAnswer(question),
       });
-      // A pending INCORRECTA/Todas/Ninguna quota is resolved after the review (see withNoneOption).
-      const blocking = earlyDistribution.filter(error => error !== "CUOTA_NEGATIVAS_PENDIENTE");
+      // A pending INCORRECTA/Todas/Ninguna quota is resolved after the review (see withNoneOption), unless
+      // the Todas/Ninguna cap is already full: then the question would be reviewed only to be thrown away.
+      const noneFits = (formatCounts.get("TODAS_NINGUNA") || 0) < formatCap("TODAS_NINGUNA", formatLimitCount);
+      const blocking = earlyDistribution.filter(error => error !== "CUOTA_NEGATIVAS_PENDIENTE" || !noneFits);
+      // The type the model declares: a question outside the teachers' mix is not worth a review.
+      blocking.push(...typeErrors({ type: question.question_type, difficulty, targets, typeCounts: typeState, relax: relaxCoverage, allowed: allowedTypes }));
       if (blocking.length) { reject(question, blocking); continue; }
       // Metadata comes from the actual source, never from a guessed LLM location.
       question.chapter = document.content_type === "CAPITULO" ? document.original_filename : sourceChunk.chapter;
@@ -372,59 +412,83 @@ export async function generateQuestions({ user, documentId, count, difficulty, t
         rejectedQuestionTexts.push(candidate.question.question);
       } else novel.push({ ...candidate, embedding });
     }
-    // One documentary review per novel batch; no extra AI calls for known duplicates.
-    const audits = await auditCandidates(novel, difficulty, qualityInstructions, contextChunks);
-    for (const [index, novelCandidate] of novel.entries()) {
-      const { prepared, sourceChunk, embedding } = novelCandidate;
-      let { question } = novelCandidate;
-      const audit = audits[index];
-      let format = questionFormat(question, audit?.format);
-      const distribution = () => distributionErrors({
-        chunk: sourceChunk, format, sectionCounts, formatCounts, availableSections, count: formatLimitCount, relaxCoverage,
-        globalAnswer: hasGlobalAnswer(question),
-      });
-      const errors = [...(audit?.errors || ["AUDITORIA_INCOMPLETA"])];
-      if (!errors.length) errors.push(...distribution());
-      // Only the minimum of INCORRECTA/Todas/Ninguna is missing: turn this approved question into one.
-      if (errors.length === 1 && errors[0] === "CUOTA_NEGATIVAS_PENDIENTE" && format !== "INCORRECTA") {
-        question = withNoneOption(question);
-        format = "TODAS_NINGUNA";
-        errors.splice(0, 1, ...distribution());
-        logVerbose(`[Generación cuota] se añade «Ninguna es correcta» a «${question.question}»`);
-      }
-      if (errors.length) { reject(question, errors, audit?.details); continue; }
-      // Reserve the slot before awaiting: other documents generate in parallel and share the format caps.
-      const section = coverageKey(sourceChunk);
-      const adjust = (map, key, delta) => map.set(key, (map.get(key) || 0) + delta);
-      const globalAnswer = hasGlobalAnswer(question);
-      adjust(sectionCounts, section, 1);
-      adjust(formatCounts, format, 1);
-      if (globalAnswer) adjust(formatCounts, GLOBAL_ANSWER_KEY, 1);
-      const stored = await saveIfUnique({
-        question,
-        prepared,
-        embedding,
-        onDuplicate: (match) => onDuplicate(question, match),
-        sourceChunk,
-        document,
-        testId,
-        userId: user.id,
-        documentId,
-      });
+    // Review only as many candidates as questions are still missing, and the next ones only after a
+    // rejection: each review sends ~10.000 tokens and reviewing the whole batch filled the OpenAI
+    // per-minute quota with questions that were approved and then thrown away.
+    const pending = [...novel];
+    while (pending.length && saved.length < normalizedCount) {
+      const round = pending.splice(0, normalizedCount - saved.length);
+      const audits = await auditCandidates(round, difficulty, contextChunks);
+      for (const [index, novelCandidate] of round.entries()) {
+        const { embedding } = novelCandidate;
+        let { question, prepared, sourceChunk } = novelCandidate;
+        const audit = audits[index];
+        // The reference points to the fragment where the reviewer found the answer, not to the one the model named.
+        const answerChunk = audit?.sourceChunkId && contextChunks.find(chunk => chunk.id === audit.sourceChunkId);
+        if (answerChunk && answerChunk.id !== sourceChunk.id) {
+          const located = { ...question, source_chunk_id: answerChunk.id, reference: sourceReference(document, answerChunk),
+            chapter: document.content_type === "CAPITULO" ? document.original_filename : answerChunk.chapter };
+          const relocated = prepareQuestion({ question: located, document, sourceChunk: answerChunk });
+          if (relocated) {
+            logVerbose(`[Generación referencia] «${question.question}»: página ${sourceChunk.page} → ${answerChunk.page}`);
+            question = located;
+            prepared = relocated;
+            sourceChunk = answerChunk;
+          }
+        }
+        let format = questionFormat(question, audit?.format);
+        // The type is decided when generating (the batch plan) and checked before the review, for free.
+        const questionType = question.question_type || null;
+        const distribution = () => distributionErrors({
+          chunk: sourceChunk, format, sectionCounts, formatCounts, availableSections, count: formatLimitCount, relaxCoverage,
+          globalAnswer: hasGlobalAnswer(question),
+        });
+        const errors = [...(audit?.errors || ["AUDITORIA_INCOMPLETA"])];
+        // Another document of the test may have filled this type while this one was being reviewed.
+        if (!errors.length) errors.push(...distribution(), ...typeErrors({ type: questionType, difficulty, targets, typeCounts: typeState, relax: relaxCoverage, allowed: allowedTypes }));
+        // Only the minimum of INCORRECTA/Todas/Ninguna is missing: turn this approved question into one.
+        if (errors.length === 1 && errors[0] === "CUOTA_NEGATIVAS_PENDIENTE" && format !== "INCORRECTA") {
+          question = withNoneOption(question);
+          format = "TODAS_NINGUNA";
+          errors.splice(0, 1, ...distribution());
+          logVerbose(`[Generación cuota] se añade «Ninguna es correcta» a «${question.question}»`);
+        }
+        if (errors.length) { reject(question, errors, audit?.details); continue; }
+        // Reserve the slot before awaiting: other documents generate in parallel and share the format caps.
+        const section = coverageKey(sourceChunk);
+        const adjust = (map, key, delta) => map.set(key, (map.get(key) || 0) + delta);
+        const globalAnswer = hasGlobalAnswer(question);
+        adjust(sectionCounts, section, 1);
+        adjust(formatCounts, format, 1);
+        if (globalAnswer) adjust(formatCounts, GLOBAL_ANSWER_KEY, 1);
+        if (questionType) adjust(typeState, questionType, 1);
+        const stored = await saveIfUnique({
+          question,
+          prepared,
+          embedding,
+          onDuplicate: (match) => onDuplicate(question, match),
+          sourceChunk,
+          document,
+          testId,
+          userId: user.id,
+          documentId,
+        });
 
-      if (stored) {
-        saved.push(stored);
-        progress.saved += 1;
-        // Without the manual prefix (even if the model wrote it): the document is already in the line.
-        logQuestionSaved(progress, { question: { ...stored, question: prepared.cleanQuestion }, difficulty, documentLabel });
-      } else {
-        adjust(sectionCounts, section, -1);
-        adjust(formatCounts, format, -1);
-        if (globalAnswer) adjust(formatCounts, GLOBAL_ANSWER_KEY, -1);
-        rejectedCount += 1;
-        rejectedQuestionTexts.push(question.question);
+        if (stored) {
+          saved.push(stored);
+          progress.saved += 1;
+          // Without the manual prefix (even if the model wrote it): the document is already in the line.
+          logQuestionSaved(progress, { question: { ...stored, question: prepared.cleanQuestion }, difficulty, documentLabel });
+        } else {
+          adjust(sectionCounts, section, -1);
+          adjust(formatCounts, format, -1);
+          if (globalAnswer) adjust(formatCounts, GLOBAL_ANSWER_KEY, -1);
+          if (questionType) adjust(typeState, questionType, -1);
+          rejectedCount += 1;
+          rejectedQuestionTexts.push(question.question);
+        }
+        if (saved.length === normalizedCount) break;
       }
-      if (saved.length === normalizedCount) break;
     }
     logAttempt({
       documentLabel, difficulty, attempt: attempt + 1, generated: parsed.questions.length, accepted: saved.length - savedBefore, repaired: repairedCount,
@@ -461,6 +525,8 @@ export async function generateConfiguredQuestions({
   contentCounts,
   documentCounts,
   difficultyCounts,
+  levelCounts = null,
+  questionTypes = QUESTION_TYPES,
   testDifficulty = null,
   testName,
 }) {
@@ -473,7 +539,7 @@ export async function generateConfiguredQuestions({
   }
 
   const { rows: documents } = await query(
-    `select id, content_type
+    `select id, content_type, original_filename
      from documents
      where status = 'AVAILABLE'
        and id = any($1::uuid[])
@@ -483,6 +549,11 @@ export async function generateConfiguredQuestions({
   );
   if (documents.length !== uniqueDocumentIds.length) {
     throw new HttpError(400, "Alguno de los PDFs seleccionados no está disponible");
+  }
+  // Questions come from exactly the selected PDFs (manual, theme or chapter), but never from a PDF and another
+  // one that contains it: they share content and generating from both gave the same questions twice.
+  if (overlappingDocuments(documents).length) {
+    throw new HttpError(400, "Has elegido un PDF que ya está incluido en otro de la selección (un tema dentro de su manual o un capítulo dentro de su tema)");
   }
   const documentsByType = documents.reduce((grouped, document) => {
     grouped[document.content_type] ||= [];
@@ -528,10 +599,10 @@ export async function generateConfiguredQuestions({
     timeZone: "Europe/Madrid",
   }).format(new Date())}`;
   const { rows: testRows } = await query(
-    `insert into question_sets (user_id, name, requested_count, difficulty_counts, document_ids, test_difficulty)
-     values ($1, $2, $3, $4, $5, $6)
+    `insert into question_sets (user_id, name, requested_count, difficulty_counts, document_ids, test_difficulty, level_counts)
+     values ($1, $2, $3, $4, $5, $6, $7)
      returning *`,
-    [user.id, normalizeUnicode(testName || automaticName), requestedCount, JSON.stringify(difficultyCounts), uniqueDocumentIds, testDifficulty],
+    [user.id, normalizeUnicode(testName || automaticName), requestedCount, JSON.stringify(difficultyCounts), uniqueDocumentIds, testDifficulty, levelCounts && JSON.stringify(levelCounts)],
   );
   const test = testRows[0];
   const progress = createProgress({ name: test.name, requested: requestedCount });
@@ -540,6 +611,15 @@ export async function generateConfiguredQuestions({
   logTestStarted(progress, { documents: uniqueDocumentIds.length, difficultyCounts });
   const coverageState = new Map();
   const formatState = new Map();
+  // The teachers' mix of question types for the levels of this test (Élite = F and D, so older calls
+  // without level counts take their F and D questions as Élite).
+  const allowedTypes = [...new Set(questionTypes)];
+  const selectionError = typeSelectionError(allowedTypes, difficultyCounts);
+  if (selectionError) throw new HttpError(400, selectionError);
+  const targets = typeTargets(levelCounts || {
+    PRINCIPIANTE: difficultyCounts.P || 0, ELITE: (difficultyCounts.F || 0) + (difficultyCounts.D || 0),
+  }, allowedTypes);
+  const typeState = new Map();
   const saved = [];
   try {
     const tasksByDocument = new Map();
@@ -566,6 +646,9 @@ export async function generateConfiguredQuestions({
           testId: test.id,
           coverageState,
           formatState,
+          typeState,
+          typeTargets: targets,
+          allowedTypes,
           totalCount: requestedCount,
           progress,
         })));
@@ -604,6 +687,9 @@ export async function generateConfiguredQuestions({
 }
 
 const GENERATION_CONCURRENCY = 3;
+// The longest valid answer the generator may write: in the teachers' questions half the options have 4 words or
+// fewer in P, and about 10 in D. A longer answer was the most frequent rejection (19-28 words vs 6-12).
+const MAX_ANSWER_WORDS = { PRINCIPIANTE: 12, FACIL: 12, DIFICIL: 16 };
 
 async function mapWithConcurrency(items, limit, worker) {
   const results = new Array(items.length);
@@ -642,7 +728,8 @@ async function getContextChunks(documentId, userId) {
 }
 
 function pickContextChunks({ orderedRows, count, offset }) {
-  const windowSize = Math.max(4, Math.min(count * 3, 18));
+  // Twice the questions of the batch, at most 10: each fragment is ~300 tokens and every batch pays for them.
+  const windowSize = Math.max(4, Math.min(count * 2, 10));
   const start = offset % orderedRows.length;
   const sequentialRows = [
     ...orderedRows.slice(start),
@@ -662,7 +749,7 @@ async function getPreviousQuestionTexts(documentId, userId, chunkIds, testId = n
      order by case when question_set_id = $4 then 0 else 1 end,
               case when source_chunk_id = any($3::uuid[]) then 0 else 1 end,
               created_at desc, id
-     limit 60`,
+     limit 30`,
     [documentId, userId, chunkIds, testId],
   );
 
@@ -684,15 +771,8 @@ function buildPrompt({
   formatSummary,
   formatLimitCount,
   invertedTarget,
+  typeGuide = "",
 }) {
-  const levelInstructions = {
-    PRINCIPIANTE:
-      "Nivel P (Principiante), según la guía de QTH: mide la estructura básica del tema (títulos, subtítulos, definiciones básicas, clasificaciones generales); el alumno piensa «esto lo puedo responder si he dado un par de vueltas al tema». Enunciados breves, fieles a la literalidad del texto oficial, con bastante distancia entre la respuesta correcta y las incorrectas. Evita enunciados largos, opciones demasiado parecidas, cambios mínimos de palabras que confundan, detalles escondidos y trampas. Modelo: «¿Cuál de los siguientes elementos forma parte de la clasificación indicada en el tema?».",
-    FACIL:
-      "Nivel F (Fácil), según la guía de QTH: capa más profunda del tema; exige comprender y memorizar con precisión y diferenciar opciones parecidas; el alumno piensa «lo sé, pero tengo que leer bien porque hay opciones que se parecen». Distractores relativamente parecidos y datos numéricos cercanos si la fuente es clara; al menos una o dos opciones descartables para quien ha estudiado bien; obliga a leer con calma. Modelo: «Según el temario, ¿cuál de las siguientes afirmaciones se ajusta correctamente a la definición estudiada?».",
-    DIFICIL:
-      "Nivel D (Difícil), según la guía de QTH: detalles, relaciones entre varios conceptos, aplicación práctica, cálculos o cambios de unidades, tablas largas y datos poco visibles; el alumno piensa «tengo que dominar el tema y aplicar lo estudiado con precisión». Puede llevar la trampa en el enunciado, enunciados más largos pero comprensibles, información adicional no necesaria y opciones muy similares. Debe ser difícil pero defendible: nunca por mala redacción, varias interpretaciones o distractores que también puedan defenderse. Modelo: «En una intervención con las condiciones descritas, ¿qué opción sería la más adecuada según el procedimiento indicado en el temario?».",
-  };
 
   const context = contextChunks
     .map(
@@ -722,20 +802,36 @@ function buildPrompt({
       content: `Temario: ${document.original_filename}
 Numero de preguntas solicitadas: ${count}
 Nivel solicitado: ${difficulty}. Todas las preguntas deben tener difficulty="${difficulty}".
+PROCESO PARA CREAR CADA PREGUNTA (el mismo que siguen los profesores de QTH; el formato de respuesta sigue este orden):
+1. Lee el apartado del fragmento y localiza una idea preguntable (idea), con su fragmento (source_chunk_id).
+2. Decide qué quieres medir (question_type): literal, conceptual, clasificación, comparación, aplicación práctica, cálculo, detalle difícil o relación de conceptos.
+3. El nivel ya está decidido: ${difficulty}.
+4. Redacta un enunciado claro que indique exactamente qué se pide (question).
+5. Escribe primero la respuesta correcta (correct_option). Sale literalmente del temario (en las preguntas que piden la INCORRECTA, y con «Todas son correctas», lo que sale literalmente son las tres afirmaciones verdaderas), pero solo el núcleo que responde a lo pedido: las palabras clave del manual, sin oraciones subordinadas, ejemplos ni enumeraciones accesorias. Como máximo ${MAX_ANSWER_WORDS[difficulty]} palabras. Cuenta sus palabras y escribe el número en correct_option_words.
+6. Crea después los tres distractores (distractors), siguiendo estas reglas:
+- Longitud: cada distractor tiene entre correct_option_words − 2 y correct_option_words + 2 palabras, con la misma plantilla gramatical y el mismo estilo que la correcta.
+- Origen: los inventas tú con sentido común y criterio; no tienen que aparecer en el temario. También sirve un dato que el temario da para otro contexto (en una pregunta sobre el nitrógeno, una propiedad del CO₂). En las preguntas de cálculo, resultados de errores típicos con los datos del enunciado (unidad equivocada, fórmula inversa, paso omitido).
+- Parecido con la correcta según el nivel: en P, fáciles de descartar si se conoce el dato, pero nunca sin conocerlo; en F, relativamente parecidos; en D, muy parecidos.
+- ${DISTRACTOR_GUIDE}
+${difficulty === "PRINCIPIANTE" ? "" : `- ${CALCULATION_RULE}\n`}- Prohibido: opciones que contradigan el propósito del concepto (acelerar la combustión en un mecanismo de extinción), que se contradigan a sí mismas o que pertenezcan a otra categoría (polvos en una pregunta de espumas).
+7. Antes de responder, comprueba las cuatro opciones. Cuenta las palabras de cada una y escríbelas en option_words (la correcta y los tres distractores, en ese orden). Si entre la más larga y la más corta hay más de 5 palabras («Todas son correctas.» y «Ninguna es correcta.» no cuentan), reescríbelas ya: acorta la más larga hasta su núcleo o alarga las cortas, y vuelve a contar. Comprueba también que solo una opción responde a lo pedido y que ningún distractor puede defenderse como correcto. Una pregunta es impugnable, y no debe generarse, si tiene ${CONTESTABLE_CASES}. Si hay riesgo, elige otra idea preguntable o cambia el formato. La aplicación descarta las preguntas que no lo cumplan.
+8. Añade una explicación breve, útil y fundamentada (explanation).
+9. Comprueba que la pregunta no sea ambigua ni impugnable; si lo es, corrígela o descártala.
+10. Clasifícala por tema (topic), capítulo (chapter), dificultad (difficulty) y formato (format).
+${QUESTION_TYPE_DEFINITIONS}
+${typeGuide}
 CONTROL OBLIGATORIO DE CALIDAD:
-${DISTRACTOR_POLICY}
+${QUESTION_ANATOMY}
 La explicación, como pide la guía de QTH, indica con claridad cuál es la respuesta válida (por su contenido) y por qué lo es con el texto del manual; explica por qué las demás no lo son cuando sea útil, y siempre en preguntas de afirmaciones, corrigiendo la falsa. Lenguaje sencillo y directo, sin alargarla si no aporta valor. No escribas en la explicación la página ni el apartado (ni al principio ni entre paréntesis): la aplicación muestra la referencia concreta aparte; empieza directamente por el texto del manual que justifica la respuesta. Puede ser breve y agrupar el descarte cuando la misma evidencia lo justifica. No cites letras ni posiciones; identifica el contenido para que la aplicación pueda mezclar las opciones.
 Usa variedad de preguntas directas, afirmaciones correctas/incorrectas, clasificaciones, cifras, fórmulas y comparaciones si el contenido y el nivel lo permiten. No fuerces todos los formatos en un lote. El test completo tiene ${formatLimitCount} preguntas; procura que ningún formato supere el ${Math.round(MAX_FORMAT_SHARE * 100)}% del test.
 ${FORMAT_DEFINITIONS}
 ${invertedInstruction(invertedTarget, count, formatSummary, formatLimitCount)}
-LONGITUD DE LAS OPCIONES (se comprueba automáticamente y la pregunta se descarta si no se cumple): entre la opción más larga y la más corta no puede haber más de 5 palabras; «Todas son correctas.» y «Ninguna es correcta.» no cuentan. Redacta primero la respuesta válida y ajusta cada alternativa a ±2 palabras de ella, con la misma plantilla gramatical. Prefiere opciones breves (entre 2 y 12 palabras); en preguntas de cuatro afirmaciones, recorta la afirmación más larga en vez de alargar las cortas. Cuenta las palabras de cada opción y escríbelas en option_words; si la diferencia supera 5, reescribe las opciones antes de responder.
-ORIGEN DE LOS DISTRACTORES: antes de escribir cada distractor, busca en el contexto un dato real de otro concepto, sustancia, clase, valor o fase y copia su redacción lo más literalmente posible. Si no hay uno que encaje, puedes inventarlo con las condiciones indicadas: verosímil, de la misma categoría, sin contradecir el sentido común y descartable sin ambigüedad con la fuente.
 ${POSITION_POLICY}
 source_chunk_id es obligatorio: copia el UUID exacto de un fragmento del contexto que sustente la pregunta. No generes reference: la aplicación la construye con los datos del fragmento y resuelve el capítulo con los encabezados recuperados.
 Apartados ya usados (elige los menos usados antes de repetir): ${JSON.stringify(coverageSummary)}
 Formatos ya usados: ${JSON.stringify(formatSummary)}
 Errores recientes a evitar: ${JSON.stringify(validationFeedback)}
-Instrucciones de nivel: ${levelInstructions[difficulty]}
+Instrucciones de nivel (guía de QTH): ${DIFFICULTY_PRINCIPLE} ${LEVEL_GUIDE[difficulty]}
 Instrucciones de calidad (las marcadas CURATED son las reglas revisadas; los complementos no pueden contradecirlas):
 ${retrievedInstructions}
 
@@ -755,7 +851,7 @@ ${privateKnowledge.officialExamples}
 
 Reparte las preguntas entre apartados distintos del contexto cuando sea posible. Si aparecen formulas, unidades, listas, definiciones normativas o valores numericos, conviertelos en preguntas evaluables.
 El campo source_title debe contener únicamente el título del contenido, sin etiquetas ni números de manual, tema o capítulo. La aplicación añadirá al enunciado la fuente "${formatCeisSourceLabel(document.display_title, document.original_filename)}"; no la escribas en question ni en las respuestas.
-Los campos topic y chapter son metadatos de clasificación. Nunca incluyas etiquetas como "Capítulo 5", "Tema 2", nombres de archivos o referencias a la estructura del PDF en question, option_a, option_b, option_c ni option_d. Pregunta por el contenido, no por su ubicación en el documento. No inventes tema, capitulo ni apartado: extraelos del contexto; si no se identifican, indica "No identificado".
+Los campos topic y chapter son metadatos de clasificación. Nunca incluyas etiquetas como "Capítulo 5", "Tema 2", nombres de archivos o referencias a la estructura del PDF en question, correct_option ni distractors. Pregunta por el contenido, no por su ubicación en el documento. No inventes tema, capitulo ni apartado: extraelos del contexto; si no se identifican, indica "No identificado".
 
 REGLAS DE NOVEDAD OBLIGATORIAS:
 Antes de redactar, selecciona hechos evaluables distintos del contexto y descarta los que ya evalúan las preguntas excluidas. Cada pregunta del lote debe evaluar un hecho diferente: una condición, un valor, una excepción, una relación o un paso concreto. Reparte esos hechos entre fragmentos cuando haya material suficiente.
@@ -775,20 +871,20 @@ Devuelve exactamente este formato:
 {
   "questions": [
     {
+      "source_chunk_id": "uuid del fragmento usado",
+      "idea": "Idea preguntable del apartado, en una frase",
+      "question_type": "${QUESTION_TYPES.join("|")}",
+      "difficulty": "PRINCIPIANTE|FACIL|DIFICIL (sin tildes)",
       "question": "Enunciado",
-      "option_a": "Respuesta A",
-      "option_b": "Respuesta B",
-      "option_c": "Respuesta C",
-      "option_d": "Respuesta D",
-      "correct_answer": "A|B|C|D",
+      "correct_option": "Respuesta correcta: núcleo literal del temario",
+      "correct_option_words": 0,
+      "distractors": ["Distractor con correct_option_words ± 2 palabras", "Distractor 2", "Distractor 3"],
+      "option_words": [0, 0, 0, 0],
       "explanation": "Explicacion basada en el contexto",
       "source_title": "Titulo legible del manual o documento de origen, sin extension PDF",
       "topic": "Tema exacto al que pertenece el contenido",
       "chapter": "Capitulo exacto al que pertenece el contenido",
-      "difficulty": "PRINCIPIANTE|FACIL|DIFICIL (sin tildes)",
-      "source_chunk_id": "uuid del fragmento usado",
-      "format": "${FORMATS.join("|")} (objetivo principal de la pregunta)",
-      "option_words": [0, 0, 0, 0]
+      "format": "${FORMATS.join("|")} (objetivo principal de la pregunta)"
     }
   ]
 }`,
@@ -805,6 +901,12 @@ function invertedInstruction({ required, inverted, missing, remaining }, count, 
   const globalLeft = Math.max(formatCap("TODAS_NINGUNA", formatLimitCount) - (formatSummary.TODAS_NINGUNA || 0), 0);
   // Never ask for more than the caps still allow: a 5-question test was asked for 4 of 8 while only
   // 1 INCORRECTA and 1 Todas/Ninguna fitted, and the model filled the batch with «Todas son correctas».
+  // The last questions of the test must all be of this type: every candidate of the batch must be, so the
+  // reserve is useful too (asking for «at least 1 of 4» gave batches of ordinary questions that were thrown away).
+  if (missing >= remaining && incorrectaLeft + globalLeft > 0) {
+    const kinds = [incorrectaLeft && "pedir la INCORRECTA o lo que NO es", globalLeft && "incluir «Todas son correctas.» o «Ninguna es correcta.»"].filter(Boolean).join(" o ");
+    return `Las ${missing} preguntas que faltan del test deben ${kinds} para cumplir el mínimo del 30%: TODAS las preguntas de este lote deben ser de ese tipo (solo se guardarán ${missing}; las demás son reserva). Ninguna pregunta de este lote puede pedir simplemente la CORRECTA.`;
+  }
   const proportional = missing ? Math.max(1, Math.ceil((missing / Math.max(remaining, 1)) * count)) : 0;
   const share = Math.min(proportional, missing, incorrectaLeft + globalLeft, count);
   const negatives = incorrectaLeft
@@ -814,7 +916,7 @@ function invertedInstruction({ required, inverted, missing, remaining }, count, 
   const globals = globalLeft
     ? `Como máximo ${Math.min(globalLeft, count)} preguntas de este lote pueden incluir «Todas son correctas.» o «Ninguna es correcta.» (quedan ${globalLeft} en todo el test, máximo 15%); el resto de preguntas del lote no las incluyen. Aproximadamente en un tercio de ellas esa opción debe ser la respuesta válida (quedan ${answersLeft}); en las demás es un distractor. Para que sea la válida, las otras tres opciones deben ser todas verdaderas («Todas son correctas.») o todas falsas («Ninguna es correcta.»). La aplicación coloca siempre esa opción en la D.`
     : "El cupo de «Todas son correctas.»/«Ninguna es correcta.» está agotado: NO las uses en este lote.";
-  return `Al menos ${required} preguntas del test (30%) deben pedir la INCORRECTA o incluir «Todas son correctas.» o «Ninguna es correcta.» como una de las opciones (correcta o distractor). Llevas ${inverted}. ${share ? `En este lote, al menos ${share} de las ${count} preguntas deben ser de este tipo.` : "El mínimo ya está cubierto."} ${negatives} ${globals} En las preguntas INCORRECTA, las tres opciones verdaderas deben ser fieles a la fuente y la falsa, preferiblemente, un dato real de otro contexto del mismo tema.`;
+  return `Al menos ${required} preguntas del test (30%) deben pedir la INCORRECTA o incluir «Todas son correctas.» o «Ninguna es correcta.» como una de las opciones (correcta o distractor). Llevas ${inverted}. ${share ? `En este lote, al menos ${share} de las ${count} preguntas deben ser de este tipo.` : "El mínimo ya está cubierto."} ${negatives} ${globals} En las preguntas INCORRECTA, las tres opciones verdaderas se copian literalmente del temario (puedes recortar la frase para ajustar la longitud, pero no reescribirla) y la falsa es una de ellas con un dato cambiado o un dato de otro contexto del mismo tema.`;
 }
 
 function prepareQuestion({ question, document, sourceChunk }) {
@@ -912,9 +1014,10 @@ async function insertIfUnique({ question, prepared, embedding, sourceChunk, test
        chapter,
        reference,
        difficulty,
-       embedding
+       embedding,
+       question_type
      )
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::vector)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::vector, $18)
      returning *`,
     [
       userId,
@@ -934,6 +1037,7 @@ async function insertIfUnique({ question, prepared, embedding, sourceChunk, test
       normalizeUnicode(question.reference),
       question.difficulty,
       vector,
+      question.question_type || null,
     ],
   );
 

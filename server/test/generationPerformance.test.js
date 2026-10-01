@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 // The generation prints its progress to the terminal. In tests that output shares the channel the
 // runner uses to collect results and occasionally corrupted it («Unable to deserialize cloned data»).
 for (const method of ['log', 'info', 'warn', 'error']) mock.method(console, method, () => {});
-const chunks = Array.from({ length: 20 }, (_, i) => ({ id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`, text: 'Contenido', page: i + 1 }));
+// 12 fragments: with windows of 8 the second batch wraps around and still sees the first one, which every question cites.
+const chunks = Array.from({ length: 12 }, (_, i) => ({ id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`, text: 'Contenido', page: i + 1 }));
 let rows, batches, retrievalCalls, instructionsStarted, knowledgeStarted, chatCalls;
 const question = text => ({ question: text, option_a: 'Uno', option_b: 'Dos', option_c: 'Tres', option_d: 'Cuatro', correct_answer: 'A', explanation: 'Explicación de la respuesta', source_title: 'Hidráulica', topic: 'Presión', chapter: 'Capítulo', reference: 'Manual página 1', difficulty: 'FACIL', source_chunk_id: chunks[0].id });
-mock.module('../src/config/env.js', { namedExports: { env: { questionSimilarityThreshold: 0.13 } } });
+mock.module('../src/config/env.js', { namedExports: { env: { questionSimilarityThreshold: 0.13, generationPartSize: 8 } } });
 mock.module('../src/db/pool.js', { namedExports: {
   withTransaction: async fn => fn({ query: async () => ({ rows: [] }) }),
   query: async (sql, params) => {

@@ -1,12 +1,20 @@
-import { ChevronDown, ChevronRight, Play } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { ChevronDown, ChevronRight, Info, Play } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { TEST_DIFFICULTIES, distributeTestDifficulty } from "../utils/testDifficulty.js";
+import { TEST_DIFFICULTIES } from "../utils/testDifficulty.js";
+import { availableTypes, QUESTION_TYPE_DESCRIPTIONS, QUESTION_TYPE_LABELS, typeSelectionWarning } from "../utils/questionTypes.js";
 import QuestionReview from "../components/QuestionReview.jsx";
 import { api } from "../services/api.js";
-import { toggleDocumentSelection } from "../utils/documentSelection.js";
+import { selectedAncestor, toggleSource } from "../utils/documentSelection.js";
 import { suggestTestName } from "../utils/testName.js";
 import { useGeneration } from "../context/GenerationContext.jsx";
+
+// What a teacher can expect from each level (QTH guide and the teachers' own questions).
+const LEVEL_DESCRIPTIONS = {
+  PRINCIPIANTE: "Preguntas básicas: estructura del tema, enunciados directos y opciones fáciles de descartar si conoces el dato.",
+  ELITE: "Preguntas fáciles y difíciles: opciones que se parecen, cifras cercanas, detalles, supuestos prácticos y cálculos.",
+  ALEATORIO: "Mezcla de todas: preguntas de principiante, fáciles y difíciles en el mismo test.",
+};
 
 export default function Generator() {
   const [searchParams] = useSearchParams();
@@ -17,10 +25,30 @@ export default function Generator() {
   const [documents, setDocuments] = useState([]);
   const [selectedDocumentIds, setSelectedDocumentIds] = useState([]);
   const [questionTotal, setQuestionTotal] = useState(10);
-  const [contentMode, setContentMode] = useState("complete");
   const [documentCounts, setDocumentCounts] = useState({});
-  const [testDifficulty, setTestDifficulty] = useState("DIFICIL");
-  const [difficultyCounts, setDifficultyCounts] = useState({ P: 4, F: 3, D: 3 });
+  // Questions per level as the app shows them; the server splits each level into P, F and D.
+  const [levelCounts, setLevelCounts] = useState({ PRINCIPIANTE: 10, ELITE: 0, ALEATORIO: 0 });
+  // All types selected: the teachers' mix of question types.
+  const [questionTypes, setQuestionTypes] = useState(Object.keys(QUESTION_TYPE_LABELS));
+  // Types the selected levels cannot have (calculations with only Principiante) are disabled and not sent.
+  const enabledTypes = availableTypes(levelCounts);
+  const selectedTypes = questionTypes.filter((type) => enabledTypes.includes(type));
+  const typeWarning = typeSelectionWarning(selectedTypes, levelCounts);
+  // The definitions of the types, behind the info icon next to the step title.
+  const [typeInfoOpen, setTypeInfoOpen] = useState(false);
+  const typeInfoRef = useRef(null);
+  useEffect(() => {
+    if (!typeInfoOpen) return undefined;
+    const close = (event) => {
+      if (event.type === "keydown" ? event.key === "Escape" : !typeInfoRef.current?.contains(event.target)) setTypeInfoOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [typeInfoOpen]);
   // The generation itself lives in GenerationContext so it survives leaving this page.
   const { generation, start, markSeen } = useGeneration();
   const loading = generation.status === "running";
@@ -43,19 +71,15 @@ export default function Generator() {
     () => availableDocuments.filter((document) => selectedDocumentIds.includes(document.id)),
     [availableDocuments, selectedDocumentIds],
   );
-  const hasComplete = selectedDocuments.some((document) => document.content_type !== "CAPITULO");
-  const hasChapters = selectedDocuments.some((document) => document.content_type === "CAPITULO");
-  const effectiveMode = !hasComplete ? "chapters" : !hasChapters ? "complete" : contentMode;
-  const targetDocuments = useMemo(() => selectedDocuments.filter((document) =>
-    effectiveMode === "mixed" || (effectiveMode === "chapters" ? document.content_type === "CAPITULO" : document.content_type !== "CAPITULO"),
-  ), [selectedDocuments, effectiveMode]);
+  // The questions come from exactly the PDFs the user selected (see toggleSource).
+  const targetDocuments = selectedDocuments;
   const contentCounts = targetDocuments.reduce((counts, document) => {
     counts[document.content_type] += documentCounts[document.id] || 0;
     return counts;
   }, { MANUAL: 0, TEMA: 0, CAPITULO: 0 });
   const contentTotal = Object.values(contentCounts).reduce((sum, count) => sum + count, 0);
-  const difficultyTotal = Object.values(difficultyCounts).reduce((sum, count) => sum + count, 0);
-  const totalsMatch = questionTotal >= 1 && questionTotal <= 120 && contentTotal === questionTotal && difficultyTotal === questionTotal;
+  const difficultyTotal = Object.values(levelCounts).reduce((sum, count) => sum + count, 0);
+  const totalsMatch = questionTotal >= 1 && questionTotal <= 120 && contentTotal === questionTotal && difficultyTotal === questionTotal && !typeWarning;
 
   function distribute(total, keys) {
     return Object.fromEntries(keys.map((key, index) => [key, Math.floor(total / keys.length) + (index < total % keys.length ? 1 : 0)]));
@@ -74,7 +98,7 @@ export default function Generator() {
     api.documents().then((data) => {
       setDocuments(data.documents);
       const requested = data.documents.find((document) => document.status === "AVAILABLE" && document.id === requestedDocument);
-      setSelectedDocumentIds(requested ? toggleDocumentSelection(data.documents, [], requested) : []);
+      setSelectedDocumentIds(requested ? [requested.id] : []);
     }).catch((err) => setError(err.message)).finally(() => setSourcesLoading(false));
   }, [requestedDocument]);
 
@@ -83,19 +107,8 @@ export default function Generator() {
   }
 
   function toggleDocument(document) {
-    setSelectedDocumentIds((current) => toggleDocumentSelection(availableDocuments, current, document));
+    setSelectedDocumentIds((current) => toggleSource(availableDocuments, current, document));
   }
-
-  function applyDifficultyPreset(difficulty) {
-    setTestDifficulty(difficulty);
-    setDifficultyCounts(distributeTestDifficulty(difficulty, questionTotal));
-  }
-
-  useEffect(() => {
-    if (testDifficulty !== "CUSTOM") {
-      setDifficultyCounts(distributeTestDifficulty(testDifficulty, questionTotal));
-    }
-  }, [questionTotal, testDifficulty]);
 
   // Suggest «manual_hora» each time, unless the user typed a name of their own.
   function openNameDialog() {
@@ -116,8 +129,8 @@ export default function Generator() {
       selectedDocumentIds: targetDocuments.map((document) => document.id),
       documentCounts: Object.fromEntries(targetDocuments.map((document) => [document.id, documentCounts[document.id] || 0])),
       contentCounts,
-      difficultyCounts,
-      testDifficulty,
+      levelCounts,
+      questionTypes: selectedTypes,
       testName: name || undefined,
     }, { testName: name, requestedCount: questionTotal });
   }
@@ -195,7 +208,7 @@ export default function Generator() {
                 {!sourcesLoading && availableDocuments.length === 0 && <p className="empty-state">Todavía no hay temarios listos para usar. <Link to="/temarios">Ir a la biblioteca</Link></p>}
                 <div className="document-selection-groups">
                   {[
-                    ["MANUAL", "Manuales"],
+                    ["MANUAL", "Manuales completos"],
                     ["TEMA", "Temas"],
                     ["CAPITULO", "Capítulos"],
                   ].map(([type, label]) => {
@@ -211,11 +224,17 @@ export default function Generator() {
                           typeDocuments.map((document) => (
                             <label key={document.id}>
                               <input
-                                checked={selectedDocumentIds.includes(document.id)}
+                                checked={selectedDocumentIds.includes(document.id) || Boolean(selectedAncestor(availableDocuments, selectedDocumentIds, document))}
+                                disabled={Boolean(selectedAncestor(availableDocuments, selectedDocumentIds, document))}
                                 onChange={() => toggleDocument(document)}
                                 type="checkbox"
                               />
-                              <span>{document.display_title || document.original_filename}</span>
+                              <span>
+                                {document.display_title || document.original_filename}
+                                {selectedAncestor(availableDocuments, selectedDocumentIds, document) && (
+                                  <small className="included-in"> · incluido en {selectedAncestor(availableDocuments, selectedDocumentIds, document).display_title || selectedAncestor(availableDocuments, selectedDocumentIds, document).original_filename}</small>
+                                )}
+                              </span>
                             </label>
                           ))
                         )}
@@ -238,7 +257,11 @@ export default function Generator() {
                     <input type="number" min="1" max="120" value={questionTotal} onChange={(event) => {
                       const total = Math.min(120, Math.max(0, Math.floor(Number(event.target.value) || 0)));
                       setQuestionTotal(total);
-                      setDifficultyCounts(distribute(total, ["P", "F", "D"]));
+                      // The new total goes to the levels in use, split evenly among them.
+                      setLevelCounts((current) => {
+                        const used = Object.keys(current).filter((name) => current[name] > 0);
+                        return { PRINCIPIANTE: 0, ELITE: 0, ALEATORIO: 0, ...distribute(total, used.length ? used : ["PRINCIPIANTE"]) };
+                      });
                     }} />
                     <small>Entre 1 y 120. Si cambias el total, los repartos se recalculan por igual.</small>
                   </label>
@@ -249,21 +272,6 @@ export default function Generator() {
                     <h2>2. ¿Cómo quieres repartirlas?</h2>
                     <p>Indica cuántas preguntas quieres de cada contenido. Un 0 lo deja fuera del test.</p>
                   </div></div>
-                  <div className="content-mode-options" role="radiogroup" aria-label="Contenido de las preguntas">
-                    {hasComplete && <label className={effectiveMode === "complete" ? "selected" : ""}>
-                      <input type="radio" name="content-mode" checked={effectiveMode === "complete"} onChange={() => setContentMode("complete")} />
-                      <span><strong>Manual o tema completo</strong><small>Preguntas sobre el conjunto de cada manual o tema seleccionado.</small></span>
-                    </label>}
-                    {hasChapters && <label className={effectiveMode === "chapters" ? "selected" : ""}>
-                      <input type="radio" name="content-mode" checked={effectiveMode === "chapters"} onChange={() => setContentMode("chapters")} />
-                      <span><strong>Por capítulos</strong><small>Elige cuántas preguntas dedicar a cada capítulo seleccionado.</small></span>
-                    </label>}
-                    {hasComplete && hasChapters && <label className={effectiveMode === "mixed" ? "selected" : ""}>
-                      <input type="radio" name="content-mode" checked={effectiveMode === "mixed"} onChange={() => setContentMode("mixed")} />
-                      <span><strong>Combinar ambos</strong><small>Reparte entre contenidos completos y capítulos concretos.</small></span>
-                    </label>}
-                  </div>
-                  {!hasChapters && <p className="allocation-help">Para repartir por capítulos, selecciónalos en el paso anterior.</p>}
                   <div className="allocation-toolbar">
                     <strong>{contentTotal} de {questionTotal} preguntas asignadas</strong>
                     <button type="button" className="secondary-button" onClick={() => setDocumentCounts(distribute(questionTotal, targetDocuments.map((document) => document.id)))}>Repartir por igual</button>
@@ -281,23 +289,54 @@ export default function Generator() {
                 <section className="distribution-section">
                   <div className="distribution-heading"><div>
                     <h2>3. Elige la dificultad</h2>
-                    <p>Reparte las {questionTotal} preguntas entre estos niveles. Puedes combinar varios o usar solo uno.</p>
+                    <p>Reparte las {questionTotal} preguntas entre los niveles. Puedes usar uno solo o combinarlos.</p>
                   </div></div>
-                  <div className="count-grid difficulty-counts">
-                    {[["P", "Principiante"], ["F", "Fácil"], ["D", "Difícil"]].map(([key, label]) => <label key={key}>
-                      <span>{label}</span>
-                      <input type="number" min="0" max={questionTotal} value={difficultyCounts[key]} onChange={(event) => { setTestDifficulty("CUSTOM"); updateCount(setDifficultyCounts, key, event.target.value); }} />
-                      <small>preguntas</small>
-                    </label>)}
-                  </div>
-                  <div className="difficulty-presets"><span>Repartir automáticamente</span><div>
+                  <div className="level-choice">
                     {Object.entries(TEST_DIFFICULTIES).map(([value, preset]) => (
-                      <button key={value} type="button" aria-pressed={testDifficulty === value} onClick={() => applyDifficultyPreset(value)}>
-                        {preset.label}<small>{preset.levels.join(" + ")}</small>
-                      </button>
+                      <label className={`level-option level-option-${value.toLowerCase()}`} key={value}>
+                        <strong>{preset.label}</strong>
+                        <small>{LEVEL_DESCRIPTIONS[value]}</small>
+                        <span className="allocation-input">
+                          <input aria-label={`Preguntas de nivel ${preset.label}`} type="number" min="0" max={questionTotal} value={levelCounts[value]} onChange={(event) => updateCount(setLevelCounts, value, event.target.value)} />
+                          <small>preguntas</small>
+                        </span>
+                      </label>
                     ))}
+                  </div>
+                  <p className={`allocation-status ${difficultyTotal === questionTotal ? "complete" : ""}`} role="status">{difficultyTotal} de {questionTotal} preguntas con nivel asignado. {remainingText(difficultyTotal)}</p>
+                </section>
+
+                <section className="distribution-section">
+                  <div className="distribution-heading"><div>
+                    <div className="type-title" ref={typeInfoRef}>
+                      <h2>4. Tipos de pregunta</h2>
+                      <button aria-controls="type-definitions" aria-expanded={typeInfoOpen} aria-label="Qué mide cada tipo" className="info-button" onClick={() => setTypeInfoOpen((open) => !open)} type="button">
+                        <Info size={18} />
+                      </button>
+                      {typeInfoOpen && (
+                        <dl className="type-definitions" id="type-definitions">
+                          {Object.entries(QUESTION_TYPE_LABELS).map(([type, label]) => (
+                            <div key={type}><dt>{label}</dt><dd>{QUESTION_TYPE_DESCRIPTIONS[type]}</dd></div>
+                          ))}
+                        </dl>
+                      )}
+                    </div>
+                    <p>Si los dejas todos marcados, el test mezcla los tipos en la misma proporción que las preguntas de los profesores de QTH. Desmarca los que no quieras incluir. Cálculo y Relación de conceptos solo están disponibles en Élite y en Aleatorio.</p>
                   </div></div>
-                  <p className={`allocation-status ${difficultyTotal === questionTotal ? "complete" : ""}`} role="status">{difficultyTotal} de {questionTotal} preguntas con dificultad asignada. {remainingText(difficultyTotal)}</p>
+                  <div className="type-checks" role="group" aria-label="Tipos de pregunta">
+                    {Object.entries(QUESTION_TYPE_LABELS).map(([type, label]) => (
+                      <label className={enabledTypes.includes(type) ? "" : "disabled"} key={type} title={enabledTypes.includes(type) ? undefined : "Solo con preguntas de Élite o Aleatorio"}>
+                        <input
+                          checked={selectedTypes.includes(type)}
+                          disabled={!enabledTypes.includes(type)}
+                          onChange={() => setQuestionTypes((current) => (current.includes(type) ? current.filter((item) => item !== type) : [...current, type]))}
+                          type="checkbox"
+                        />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+                  {typeWarning && <p className="type-warning" role="alert">{typeWarning}</p>}
                 </section>
 
                 <div className="generation-summary" aria-live="polite">
@@ -326,10 +365,13 @@ export default function Generator() {
                     <div>
                       <h3>Cómo será la dificultad</h3>
                       <dl className="summary-breakdown">
-                        {[["P", "Principiante"], ["F", "Fácil"], ["D", "Difícil"]].map(([key, label]) => (
-                          <div key={key}><dt>{label}</dt><dd>{difficultyCounts[key]} {difficultyCounts[key] === 1 ? "pregunta" : "preguntas"}</dd></div>
+                        {Object.entries(TEST_DIFFICULTIES).filter(([value]) => levelCounts[value] > 0).map(([value, { label }]) => (
+                          <div key={value}><dt>{label}</dt><dd>{levelCounts[value]} {levelCounts[value] === 1 ? "pregunta" : "preguntas"}</dd></div>
                         ))}
                       </dl>
+                      <p className="summary-types">Tipos: {selectedTypes.length === enabledTypes.length
+                        ? "todos, con el reparto de los profesores"
+                        : Object.keys(QUESTION_TYPE_LABELS).filter((type) => selectedTypes.includes(type)).map((type) => QUESTION_TYPE_LABELS[type]).join(", ")}</p>
                     </div>
                   </div>
                   {!totalsMatch && <p className="summary-pending">Revisa el reparto antes de generar: {contentTotal !== questionTotal && `Contenido: ${remainingText(contentTotal)} `}{difficultyTotal !== questionTotal && `Dificultad: ${remainingText(difficultyTotal)} `}{questionTotal < 1 && "Elige al menos 1 pregunta."}</p>}

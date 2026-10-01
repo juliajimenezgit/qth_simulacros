@@ -32,7 +32,8 @@ test('returns the admin indicators with the questions per level by name', async 
   rows = { totals: [{ preguntas_total: 8, tests_completados: 3 }], team: [{ name: 'Julia', role: 'DESARROLLADOR' }], documents: [{ title: 'Teoría del Fuego', preguntas: 8 }] };
   const stats = await getAdminStats();
   assert.equal(stats.totals.preguntas_total, 8);
-  assert.deepEqual(stats.levels, { PRINCIPIANTE: 9, FACIL: 0, DIFICIL: 2 });
+  // The KPI cards only count real questions: the 3 P questions of demo tests are left out.
+  assert.deepEqual(stats.levels, { PRINCIPIANTE: 6, FACIL: 0, DIFICIL: 2 });
   assert.equal(stats.team[0].role, 'DESARROLLADOR');
   assert.equal(stats.topDocuments, undefined);
 });

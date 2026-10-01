@@ -197,7 +197,8 @@ export function distributionErrors({ chunk, format, sectionCounts, formatCounts,
   if (format && (formatCounts.get(format) || 0) >= formatCap(format, count)) errors.push('FORMATO_EXCEDIDO');
   if (globalAnswer && (formatCounts.get(GLOBAL_ANSWER_KEY) || 0) >= maxGlobalAnswers(count)) errors.push('TODAS_NINGUNA_CORRECTA_EXCEDIDA');
   const { missing, remaining } = invertedQuota(formatCounts, count);
-  if (missing > 0 && missing >= remaining && !INVERTED_FORMATS.includes(format)) errors.push('CUOTA_NEGATIVAS_PENDIENTE');
+  // Halfway through the attempts the minimum stops blocking: a test must always finish.
+  if (!relaxCoverage && missing > 0 && missing >= remaining && !INVERTED_FORMATS.includes(format)) errors.push('CUOTA_NEGATIVAS_PENDIENTE');
   return errors;
 }
 

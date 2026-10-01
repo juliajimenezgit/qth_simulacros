@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { api } from "../services/api.js";
 import { ROLE_LABELS } from "../utils/roles.js";
 
-const LEVELS = [["PRINCIPIANTE", "Principiante"], ["FACIL", "Fácil"], ["DIFICIL", "Difícil"]];
+const LEVELS = [["PRINCIPIANTE", "Principiante"], ["FACIL", "Élite · fácil"], ["DIFICIL", "Élite · difícil"]];
 const percent = (part, total) => (total ? Math.round((100 * part) / total) : 0);
 const formatMinutes = (minutes) => {
   if (!minutes) return "0 min";

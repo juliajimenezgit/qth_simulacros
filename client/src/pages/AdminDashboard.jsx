@@ -5,7 +5,7 @@ import UserDetail from "../components/UserDetail.jsx";
 import { api } from "../services/api.js";
 import { ROLE_LABELS } from "../utils/roles.js";
 
-const LEVELS = [["PRINCIPIANTE", "P"], ["FACIL", "F"], ["DIFICIL", "D"]];
+const LEVELS = ["PRINCIPIANTE", "FACIL", "DIFICIL"];
 const EMPTY_USER = { name: "", email: "", password: "", role: "PROFESOR" };
 
 // What each role can do, as the server enforces it (utils/roles.js and the owner checks in the services).
@@ -41,11 +41,6 @@ const ROLE_PERMISSIONS = [
   },
 ];
 
-const formatDuration = (seconds) => {
-  if (!seconds) return "—";
-  const minutes = Math.floor(seconds / 60);
-  return minutes ? `${minutes} min ${seconds % 60} s` : `${seconds} s`;
-};
 const formatMinutes = (minutes) => (minutes >= 60 ? `${Math.floor(minutes / 60)} h ${minutes % 60} min` : `${minutes || 0} min`);
 const percent = (part, total) => (total ? Math.round((100 * part) / total) : 0);
 const formatDate = (value) => (value
@@ -129,7 +124,7 @@ export default function AdminDashboard({ user }) {
 
   const totals = stats?.totals || {};
   const levels = stats?.levels || {};
-  const levelTotal = LEVELS.reduce((sum, [key]) => sum + (levels[key] || 0), 0);
+  const levelTotal = LEVELS.reduce((sum, key) => sum + (levels[key] || 0), 0);
   const finishedTests = (totals.tests_completados || 0) + (totals.tests_error || 0);
 
   return (
@@ -160,9 +155,9 @@ export default function AdminDashboard({ user }) {
         />
         <StatCard
           icon={Timer}
-          label="Tiempo medio por test"
-          value={formatDuration(totals.segundos_medios_test)}
-          detail={totals.segundos_medios_pregunta ? `unos ${totals.segundos_medios_pregunta} s por pregunta` : "Sin tests completados"}
+          label="Tiempo medio por pregunta"
+          value={totals.segundos_medios_pregunta ? `${totals.segundos_medios_pregunta} s` : "—"}
+          detail={totals.tests_completados ? `en ${totals.tests_completados} tests completados` : "Sin tests completados"}
         />
         <StatCard
           icon={Users}
@@ -179,8 +174,8 @@ export default function AdminDashboard({ user }) {
         <StatCard
           icon={Layers}
           label="Reparto por nivel"
-          value={LEVELS.map(([key, short]) => `${short} ${percent(levels[key] || 0, levelTotal)} %`).join(" · ")}
-          detail={`${levelTotal} preguntas clasificadas`}
+          value={`${percent(levels.PRINCIPIANTE || 0, levelTotal)} % Principiante`}
+          detail={`${percent((levels.FACIL || 0) + (levels.DIFICIL || 0), levelTotal)} % Élite`}
         />
       </div>
 

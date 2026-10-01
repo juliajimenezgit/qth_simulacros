@@ -10,13 +10,15 @@ const QUESTIONS_SQL = (filter = "true") => `(
 
 const LEVEL_KEYS = { PRINCIPIANTE: "P", FACIL: "F", DIFICIL: "D" };
 
-// Real questions by level, plus the levels stored in demo tests.
-async function levelsFor(userId = null) {
+// Real questions by level, plus the levels stored in demo tests unless only real data is wanted.
+async function levelsFor(userId = null, { includeDemo = true } = {}) {
   const params = userId ? [userId] : [];
   const owner = (alias) => (userId ? `and ${alias}.user_id = $1` : "");
   const [real, demo] = await Promise.all([
     query(`select difficulty, count(*)::int as total from questions q where true ${owner("q")} group by difficulty`, params),
-    query(`select difficulty_counts from question_sets s where s.is_demo and s.difficulty_counts is not null ${owner("s")}`, params),
+    includeDemo
+      ? query(`select difficulty_counts from question_sets s where s.is_demo and s.difficulty_counts is not null ${owner("s")}`, params)
+      : { rows: [] },
   ]);
   const levels = { PRINCIPIANTE: 0, FACIL: 0, DIFICIL: 0 };
   for (const row of real.rows) levels[row.difficulty] = (levels[row.difficulty] || 0) + row.total;
@@ -26,30 +28,30 @@ async function levelsFor(userId = null) {
   return levels;
 }
 
-// Indicators for the admin panel, all from data the app stores.
+// Indicators for the admin panel, all from data the app stores. The KPI cards only count real activity; the
+// team table and each person's detail also show the demo activity (seed:demo-activity).
 export async function getAdminStats() {
   const [totals, levels, team] = await Promise.all([
     query(
       `select
-         ${QUESTIONS_SQL()} as preguntas_total,
-         ${QUESTIONS_SQL("{t}.created_at >= now() - interval '30 days'")} as preguntas_30d,
-         (select count(*)::int from question_sets) as tests_total,
-         (select count(*)::int from question_sets where status = 'COMPLETED') as tests_completados,
-         (select count(*)::int from question_sets where status = 'ERROR') as tests_error,
-         (select count(*)::int from question_sets where status = 'GENERATING') as tests_generando,
-         (select round(avg(extract(epoch from completed_at - created_at)))::int
-            from question_sets where status = 'COMPLETED' and completed_at is not null) as segundos_medios_test,
-         (select round(avg(extract(epoch from completed_at - created_at) / nullif(generated_count, 0)))::int
-            from question_sets where status = 'COMPLETED' and completed_at is not null) as segundos_medios_pregunta,
+         (select count(*)::int from questions) as preguntas_total,
+         (select count(*)::int from questions where created_at >= now() - interval '30 days') as preguntas_30d,
+         (select count(*)::int from question_sets where not is_demo) as tests_total,
+         (select count(*)::int from question_sets where not is_demo and status = 'COMPLETED') as tests_completados,
+         (select count(*)::int from question_sets where not is_demo and status = 'ERROR') as tests_error,
+         (select count(*)::int from question_sets where not is_demo and status = 'GENERATING') as tests_generando,
+         -- Total time over total questions: a 30-question test weighs more than a 5-question one.
+         (select round(sum(extract(epoch from completed_at - created_at)) / nullif(sum(generated_count), 0))::int
+            from question_sets where not is_demo and status = 'COMPLETED' and completed_at is not null) as segundos_medios_pregunta,
          (select count(*)::int from users where role = 'PROFESOR' and deleted_at is null) as profesores_total,
          (select count(distinct qs.user_id)::int from question_sets qs join users u on u.id = qs.user_id
-            where u.role = 'PROFESOR' and u.deleted_at is null and qs.created_at >= now() - interval '30 days') as profesores_activos_30d,
-         (select coalesce(sum(minutes), 0)::int from user_usage_days where day >= current_date - 29) as minutos_30d,
+            where not qs.is_demo and u.role = 'PROFESOR' and u.deleted_at is null and qs.created_at >= now() - interval '30 days') as profesores_activos_30d,
+         (select coalesce(sum(minutes), 0)::int from user_usage_days where not is_demo and day >= current_date - 29) as minutos_30d,
          (select count(*)::int from documents where status = 'AVAILABLE') as temarios_disponibles,
          (select count(*)::int from documents where status = 'PROCESSING') as temarios_procesando,
          (select count(*)::int from documents where status = 'ERROR') as temarios_error`,
     ),
-    levelsFor(),
+    levelsFor(null, { includeDemo: false }),
     query(
       `select u.id, u.name, u.email, u.role, u.created_at,
               (select count(*)::int from question_sets s where s.user_id = u.id) as tests,

@@ -1,11 +1,13 @@
 import { pool } from "./pool.js";
+import { TEST_LEVELS } from "../utils/testLevels.js";
 
 // Fictitious activity for the demo team (everyone except Julia, whose data is real): minutes in the
 // app, logins and tests over the last 60 days. Everything is marked as demo, so it never appears in
 // the content views and «--remove» deletes it without touching real usage.
 const DAYS = 60;
 const PROFILES = [
-  // activeRate: share of days with activity; minutes: per active day; testRate: tests per active day.
+  // activeRate: share of days with activity; minutes: per active day; testRate: tests per active day;
+  // levels: share of tests at Principiante, Élite and Aleatorio.
   { email: "jon@qthsutan.es", joined: 58, activeRate: 0.3, minutes: [8, 25], testRate: 0.3, levels: [0.4, 0.4, 0.2], sizes: [10, 20], failRate: 0.1 },
   { email: "laura.martin@qthsutan.es", joined: 57, activeRate: 0.75, minutes: [40, 95], testRate: 0.45, levels: [0.5, 0.4, 0.1], sizes: [10, 20, 30], failRate: 0.05 },
   { email: "carlos.ruiz@qthsutan.es", joined: 50, activeRate: 0.5, minutes: [25, 60], testRate: 0.35, levels: [0.3, 0.5, 0.2], sizes: [10, 15, 20], failRate: 0.15 },
@@ -95,32 +97,31 @@ async function main() {
         let testTime = new Date(start.getTime() + between([3, 15]) * 60_000);
         while (random() < profile.testRate) {
           const size = pick(profile.sizes);
-          const levels = { P: 0, F: 0, D: 0 };
-          for (let index = 0; index < size; index++) {
-            const roll = random();
-            levels[roll < profile.levels[0] ? "P" : roll < profile.levels[0] + profile.levels[1] ? "F" : "D"] += 1;
-          }
+          // One test level per test, chosen with the person's usual preference.
+          const roll = random();
+          const testLevel = roll < profile.levels[0] ? "PRINCIPIANTE" : roll < profile.levels[0] + profile.levels[1] ? "ELITE" : "ALEATORIO";
           const used = [...new Set(Array.from({ length: between([1, 2]) }, () => pick(favourites)))];
           const failed = random() < profile.failRate;
           const generated = failed ? Math.max(1, size - between([1, 3])) : size;
-          // A failed test saved fewer questions: its levels must add up to what it generated.
-          while (levels.P + levels.F + levels.D > generated) {
-            const largest = Object.keys(levels).reduce((a, b) => (levels[a] >= levels[b] ? a : b));
-            levels[largest] -= 1;
-          }
-          // About 9-12 s per question, longer for level D.
+          // The questions it saved, split evenly among the difficulties of its level.
+          const levels = { P: 0, F: 0, D: 0 };
+          TEST_LEVELS[testLevel].forEach((level, index, all) => {
+            levels[level] = Math.floor(generated / all.length) + (index < generated % all.length ? 1 : 0);
+          });
+          // About 9-12 s per question, longer for D questions.
           const seconds = Math.round(size * (8 + random() * 4) * (1 + levels.D / size * 0.5));
           const name = `${slug(used[0].title)}_${String(testTime.getHours()).padStart(2, "0")}${String(testTime.getMinutes()).padStart(2, "0")}`;
           await client.query(
             `insert into question_sets
                (user_id, name, requested_count, generated_count, status, error_message, created_at, completed_at,
-                is_demo, difficulty_counts, document_ids)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, $10)`,
+                is_demo, difficulty_counts, document_ids, test_difficulty, level_counts)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, $10, $11, $12)`,
             [
               user.id, name, size, generated, failed ? "ERROR" : "COMPLETED",
               failed ? `Solo se pudieron validar ${generated} de ${size} preguntas después de 9 intentos` : null,
               testTime, failed ? null : new Date(testTime.getTime() + seconds * 1000),
               JSON.stringify(levels), used.map((document) => document.id),
+              testLevel, JSON.stringify({ [testLevel]: size }),
             ],
           );
           tests += 1;

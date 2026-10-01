@@ -12,14 +12,17 @@ export function isDescendant(parent, child) {
     : parent.content_type === 'TEMA' && child.content_type === 'CAPITULO' && a.topic === b.topic;
 }
 
-export function toggleDocumentSelection(documents, selectedIds, document) {
-  const available = documents.filter((item) => item.status === 'AVAILABLE');
-  const branch = available.filter((item) => item.id === document.id || isDescendant(document, item));
-  const next = new Set(selectedIds);
-  if (next.has(document.id)) {
-    branch.forEach((item) => next.delete(item.id));
-  } else {
-    branch.forEach((item) => next.add(item.id));
-  }
-  return [...next];
+// Questions come from exactly what the user selects: a complete manual, a theme or a chapter. A PDF and another
+// one that contains it (its theme or its manual) are never selected together: they share content, and generating
+// from both gave duplicated questions.
+export function selectedAncestor(documents, selectedIds, document) {
+  return documents.find((item) => selectedIds.includes(item.id) && isDescendant(item, document)) || null;
+}
+
+// Selecting a PDF unselects the ones it contains; a PDF inside a selected one cannot be selected.
+export function toggleSource(documents, selectedIds, document) {
+  if (selectedIds.includes(document.id)) return selectedIds.filter((id) => id !== document.id);
+  if (selectedAncestor(documents, selectedIds, document)) return selectedIds;
+  const contained = new Set(documents.filter((item) => isDescendant(document, item)).map((item) => item.id));
+  return [...selectedIds.filter((id) => !contained.has(id)), document.id];
 }

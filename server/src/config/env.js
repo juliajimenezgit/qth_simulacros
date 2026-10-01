@@ -20,6 +20,8 @@ export const env = {
   openaiTokensPerMinute: Number(process.env.OPENAI_TOKENS_PER_MINUTE || 0) || null,
   // Full detail of every rejection and OpenAI call in the terminal; by default only summaries.
   generationVerboseLogs: process.env.GENERATION_VERBOSE_LOGS === "true",
+  // Questions written by each parallel call of a generation attempt.
+  generationPartSize: Number(process.env.GENERATION_PART_SIZE || 4) || 4,
   openaiUsageLogs: process.env.OPENAI_USAGE_LOGS !== "false",
   openaiUsageCurrency: process.env.OPENAI_USAGE_CURRENCY || "USD",
   openaiChatInputUsdPerMillion: Number(
