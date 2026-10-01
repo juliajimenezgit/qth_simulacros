@@ -840,6 +840,7 @@ td small {
   padding: 9px 12px;
 }
 
+.difficulty-presets button[aria-pressed="true"],
 .difficulty-presets button:hover:not(:disabled) {
   background: var(--soft-red);
   border-color: var(--red);
@@ -1147,6 +1148,15 @@ td small {
   background: var(--soft-red);
   border-color: var(--red);
   color: var(--red);
+}
+
+.test-difficulty-summary {
+  display: grid;
+  gap: 12px;
+  padding: 16px 20px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
 }
 
 .question-list {
@@ -1566,4 +1576,406 @@ button, .sidebar-nav a, a.secondary-button, a.primary-button {
   .summary-columns { grid-template-columns: 1fr; gap: 22px; }
   .document-allocation { padding: 12px; gap: 12px; }
   .allocation-input { flex-basis: 80px; }
+}
+
+/* Admin panel: indicators, team and user creation. */
+.admin-kpis {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.admin-kpis .stat-card strong {
+  font-size: 1.6rem;
+  overflow-wrap: anywhere;
+}
+
+.team-table-wrapper {
+  overflow-x: auto;
+}
+
+.team-table {
+  border-collapse: collapse;
+  font-size: 0.92rem;
+  width: 100%;
+}
+
+.team-table th {
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 800;
+  padding: 0 10px 8px;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.team-table td {
+  border-bottom: 1px solid var(--line);
+  padding: 10px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.team-table td:first-child {
+  white-space: normal;
+}
+
+.team-table td strong,
+.team-table td small {
+  display: block;
+}
+
+.team-table td small {
+  color: var(--muted);
+}
+
+.role-badge {
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 800;
+  padding: 4px 9px;
+}
+
+.role-badge.role-admin { background: var(--soft-red); color: var(--red); }
+.role-badge.role-desarrollador { background: #ece9ff; color: #4b3fb0; }
+.role-badge.role-profesor { background: #eef3f8; color: #3d5670; }
+
+.admin-user-form {
+  display: grid;
+  gap: 12px;
+}
+
+@media (max-width: 1100px) {
+  .admin-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 640px) {
+  .admin-kpis { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* «Añadir usuario»: the email needs room, the password does not. */
+.admin-user-fields {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.7fr) minmax(0, 0.8fr) minmax(0, 0.8fr);
+}
+
+/* Every field keeps its natural height and starts at the top: the password hint below must not
+   stretch or shift its box out of line with the others. */
+.admin-user-fields {
+  align-items: start;
+}
+
+.admin-user-fields label {
+  align-content: start;
+}
+
+.admin-user-fields small {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.role-permissions {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.role-permissions article {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.role-permissions article.selected {
+  background: #fffaf9;
+  border-color: var(--red);
+  box-shadow: 0 0 0 1px var(--red) inset;
+}
+
+.role-permissions header {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+
+.role-permissions strong {
+  font-size: 0.9rem;
+}
+
+.role-permissions ul {
+  color: var(--muted);
+  display: grid;
+  font-size: 0.85rem;
+  gap: 4px;
+  line-height: 1.45;
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+@media (max-width: 1100px) {
+  .admin-user-fields { grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); }
+  .role-permissions { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 640px) {
+  .admin-user-fields { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Team rows open the person's detail. */
+.team-row {
+  cursor: pointer;
+}
+
+.team-row:hover td {
+  background: #fafafa;
+}
+
+.team-member-button {
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  padding: 0;
+  text-align: left;
+}
+
+.team-member-button strong {
+  color: var(--black);
+}
+
+.team-member-button:hover strong,
+.team-member-button:focus-visible strong {
+  color: var(--red);
+  text-decoration: underline;
+}
+
+/* Person detail. */
+.user-detail {
+  background: var(--panel);
+  border-radius: 12px;
+  box-shadow: 0 24px 70px rgb(0 0 0 / 0.24);
+  display: grid;
+  gap: 20px;
+  max-height: calc(100vh - 40px);
+  max-width: 920px;
+  overflow-y: auto;
+  padding: 28px;
+  position: relative;
+  width: 100%;
+}
+
+.user-detail h3 {
+  font-size: 1rem;
+  margin: 0 0 10px;
+}
+
+.user-detail-close {
+  position: absolute;
+  right: 16px;
+  top: 16px;
+}
+
+.user-detail-header {
+  align-items: start;
+  display: grid;
+  gap: 4px 12px;
+  grid-template-columns: auto 1fr;
+  padding-right: 40px;
+}
+
+.user-detail-header h2 {
+  margin: 0;
+}
+
+.user-detail-header div span,
+.user-detail-header p {
+  color: var(--muted);
+}
+
+.user-detail-header .role-badge {
+  align-self: center;
+  justify-self: start;
+}
+
+.user-detail-header p {
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
+}
+
+.user-detail-kpis {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.user-detail-kpis > div {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 2px;
+  padding: 12px 14px;
+}
+
+.user-detail-kpis span,
+.user-detail-kpis small {
+  color: var(--muted);
+}
+
+.user-detail-kpis span {
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.user-detail-kpis strong {
+  color: var(--black);
+  font-size: 1.4rem;
+}
+
+.user-detail-grid {
+  display: grid;
+  gap: 24px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+/* Minutes per day: one series, one hue; thin bars rounded at the data end, 2px gaps, recessive axis. */
+.daily-chart {
+  margin: 0;
+}
+
+.daily-chart figcaption {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 12px;
+}
+
+.daily-chart figcaption span {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.daily-chart-plot {
+  align-items: end;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 2px;
+  grid-template-columns: repeat(14, minmax(0, 1fr));
+  height: 140px;
+  position: relative;
+}
+
+.daily-chart-max {
+  color: var(--muted);
+  font-size: 0.72rem;
+  left: 0;
+  position: absolute;
+  top: -4px;
+}
+
+.daily-chart-column {
+  align-items: end;
+  display: flex;
+  height: 100%;
+  justify-content: center;
+  outline: none;
+  position: relative;
+}
+
+.daily-chart-bar {
+  background: var(--red);
+  border-radius: 4px 4px 0 0;
+  min-height: 0;
+  opacity: 0.85;
+  width: min(70%, 28px);
+}
+
+.daily-chart-column:hover .daily-chart-bar,
+.daily-chart-column:focus-visible .daily-chart-bar {
+  opacity: 1;
+}
+
+.daily-chart-tooltip {
+  background: var(--black);
+  border-radius: 6px;
+  bottom: calc(100% + 6px);
+  color: #ffffff;
+  display: grid;
+  font-size: 0.75rem;
+  left: 50%;
+  padding: 6px 8px;
+  pointer-events: none;
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  z-index: 2;
+}
+
+.daily-chart-axis {
+  color: var(--muted);
+  display: flex;
+  font-size: 0.75rem;
+  justify-content: space-between;
+  margin-top: 6px;
+}
+
+/* Levels: identity by label, so the bars share one neutral hue. */
+.level-row {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 90px minmax(0, 1fr) auto;
+  padding: 6px 0;
+}
+
+.level-row strong {
+  font-size: 0.85rem;
+}
+
+.level-track {
+  background: #f0f0f0;
+  border-radius: 4px;
+  height: 10px;
+  overflow: hidden;
+}
+
+.level-track span {
+  background: #3d5670;
+  border-radius: 4px;
+  display: block;
+  height: 100%;
+}
+
+.status-pill {
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 800;
+  padding: 3px 8px;
+}
+
+.status-pill.status-completed { background: #e3f6ec; color: var(--success); }
+.status-pill.status-error { background: var(--soft-red); color: var(--red); }
+.status-pill.status-generating { background: #fff3d6; color: #8a5a00; }
+
+@media (max-width: 760px) {
+  .user-detail { padding: 20px 16px; }
+  .user-detail-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .user-detail-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+.admin-user-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }

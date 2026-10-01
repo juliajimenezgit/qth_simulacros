@@ -1,8 +1,10 @@
-import { Download, FileText, Save, Search, Trash2 } from "lucide-react";
+import { Download, FileText, Plus, Save, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { testDifficultyLabel } from "../utils/testDifficulty.js";
 import { api, getToken } from "../services/api.js";
 
 const emptyEdit = {
+  documentId: "",
   question: "",
   option_a: "",
   option_b: "",
@@ -42,6 +44,10 @@ export default function QuestionReview({
   const [questions, setQuestions] = useState([]);
   const [documentId, setDocumentId] = useState(initialDocumentId);
   const [testId, setTestId] = useState(initialTestId);
+  const [creating, setCreating] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [editorError, setEditorError] = useState("");
+  const [notice, setNotice] = useState("");
   const [editingId, setEditingId] = useState(null);
   const [draft, setDraft] = useState(emptyEdit);
   const [exportFormat, setExportFormat] = useState("xlsx");
@@ -84,9 +90,39 @@ export default function QuestionReview({
     load();
   }, [documentId, testId, refreshKey]);
 
+  function startCreate() {
+    const document = documents.find(item => item.id === documentId)
+      || documents.find(item => selectedTest?.document_ids?.includes(item.id));
+    setDraft({ ...emptyEdit, documentId: document?.id || "", source_title: document?.display_title || document?.original_filename || "" });
+    setEditingId(null);
+    setEditorError("");
+    setNotice("");
+    setCreating(true);
+  }
+
+  async function saveNewQuestion() {
+    if (saving) return;
+    setSaving(true);
+    setEditorError("");
+    try {
+      await api.createQuestion({ ...draft, testId });
+      setCreating(false);
+      setNotice("Pregunta añadida al test.");
+      if (documentId && documentId !== draft.documentId) setDocumentId("");
+      else await load();
+    } catch (err) {
+      setEditorError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   function startEdit(question) {
+    setCreating(false);
+    setEditorError("");
     setEditingId(question.id);
     setDraft({
+      is_manual: question.is_manual,
       question: question.question,
       option_a: question.option_a,
       option_b: question.option_b,
@@ -103,12 +139,17 @@ export default function QuestionReview({
   }
 
   async function saveEdit() {
+    if (saving) return;
+    setSaving(true);
+    setEditorError("");
     try {
       await api.updateQuestion(editingId, draft);
       setEditingId(null);
       await load();
     } catch (err) {
-      setError(err.message);
+      setEditorError(err.message);
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -181,8 +222,10 @@ export default function QuestionReview({
         <label>
           <Search size={18} />
           <select
-            disabled={Boolean(initialTestId)}
+            disabled={Boolean(initialTestId) || creating || saving}
             onChange={(event) => {
+              setEditingId(null);
+              setNotice("");
               setTestId(event.target.value);
               setDocumentId("");
             }}
@@ -199,6 +242,7 @@ export default function QuestionReview({
         <label>
           <Search size={18} />
           <select
+            disabled={creating || saving}
             onChange={(event) => setDocumentId(event.target.value)}
             value={documentId}
           >
@@ -211,6 +255,27 @@ export default function QuestionReview({
           </select>
         </label>
       </div>
+
+      {selectedTest && (
+        <section className="test-difficulty-summary" aria-label="Dificultad seleccionada del test">
+          <strong>Dificultad del test: {testDifficultyLabel(selectedTest)}</strong>
+        </section>
+      )}
+
+      <div className="panel-actions">
+        <button className="primary-button" type="button" onClick={startCreate}
+          disabled={!selectedTest || selectedTest.status === "GENERATING" || creating || saving}>
+          <Plus size={18} /> Añadir pregunta manualmente
+        </button>
+      </div>
+      {notice && <p role="status" className="generation-success">{notice}</p>}
+      {creating && (
+        <section className="question-card">
+          <h2>Nueva pregunta para «{selectedTest?.name}»</h2>
+          <QuestionEditor draft={draft} onChange={setDraft} onCancel={() => setCreating(false)}
+            onSave={saveNewQuestion} creating documents={documents} saving={saving} error={editorError} />
+        </section>
+      )}
 
       {error && <p className="form-error">{error}</p>}
 
@@ -229,6 +294,8 @@ export default function QuestionReview({
                   draft={draft}
                   onCancel={() => setEditingId(null)}
                   onChange={setDraft}
+                  saving={saving}
+                  error={editorError}
                   onSave={saveEdit}
                 />
               ) : (
@@ -259,6 +326,7 @@ export default function QuestionReview({
                     <strong>Respuesta correcta: {item.correct_answer}</strong>
                     <p>{item.explanation}</p>
                   </div>
+                  {item.is_manual && <p className="muted-text">Manual: {item.source_title} · Tema: {item.topic} · Capítulo: {item.chapter}</p>}
                   <aside className="question-source">
                     <div className="source-reference">
                       <FileText size={16} />
@@ -269,6 +337,7 @@ export default function QuestionReview({
                     <div>
                       <button
                         className="secondary-button compact"
+                        disabled={saving || creating}
                         onClick={() => startEdit(item)}
                         type="button"
                       >
@@ -276,6 +345,7 @@ export default function QuestionReview({
                       </button>
                       <button
                         className="danger-button compact"
+                        disabled={saving || creating}
                         onClick={() => removeQuestion(item.id)}
                         type="button"
                         title="Eliminar pregunta"
@@ -323,15 +393,27 @@ function ExportControls({ disabled, format, onExport, onFormatChange }) {
   );
 }
 
-function QuestionEditor({ draft, onCancel, onChange, onSave }) {
+function QuestionEditor({ draft, onCancel, onChange, onSave, creating = false, documents = [], saving = false, error = "" }) {
   const update = (field, value) => onChange({ ...draft, [field]: value });
 
   return (
-    <div className="question-editor">
+    <form className="question-editor" onSubmit={(event) => { event.preventDefault(); onSave(); }}>
+      {creating && <label>
+        Temario asociado
+        <select autoFocus required disabled={saving} value={draft.documentId} onChange={(event) => {
+          const document = documents.find(item => item.id === event.target.value);
+          onChange({ ...draft, documentId: event.target.value, source_title: document?.display_title || document?.original_filename || "" });
+        }}>
+          <option value="">Selecciona un temario</option>
+          {documents.map(document => <option key={document.id} value={document.id}>{document.display_title || document.original_filename}</option>)}
+        </select>
+      </label>}
+      {creating && documents.length === 0 && <p className="form-error">Necesitas un temario disponible para asociar la pregunta.</p>}
       <label>
         Enunciado
         <textarea
           onChange={(event) => update("question", event.target.value)}
+          required minLength={10} disabled={saving}
           value={draft.question}
         />
       </label>
@@ -340,6 +422,7 @@ function QuestionEditor({ draft, onCancel, onChange, onSave }) {
           Respuesta {String.fromCharCode(65 + index)}
           <input
             onChange={(event) => update(field, event.target.value)}
+            required disabled={saving}
             value={draft[field]}
           />
         </label>
@@ -349,6 +432,7 @@ function QuestionEditor({ draft, onCancel, onChange, onSave }) {
           Correcta
           <select
             onChange={(event) => update("correct_answer", event.target.value)}
+            disabled={saving}
             value={draft.correct_answer}
           >
             {["A", "B", "C", "D"].map((value) => (
@@ -362,6 +446,7 @@ function QuestionEditor({ draft, onCancel, onChange, onSave }) {
           Nivel
           <select
             onChange={(event) => update("difficulty", event.target.value)}
+            disabled={saving}
             value={draft.difficulty}
           >
             <option value="PRINCIPIANTE">P — Principiante</option>
@@ -374,25 +459,37 @@ function QuestionEditor({ draft, onCancel, onChange, onSave }) {
         Explicación
         <textarea
           onChange={(event) => update("explanation", event.target.value)}
+          required minLength={5} disabled={saving}
           value={draft.explanation}
         />
       </label>
+      {(creating || draft.is_manual) && (
+        <div className="field-row">
+          {[["source_title", "Manual / fuente"], ["topic", "Tema"], ["chapter", "Capítulo"]].map(([field, label]) => (
+            <label key={field}>{label}
+              <input required disabled={saving} value={draft[field]} onChange={(event) => update(field, event.target.value)} />
+            </label>
+          ))}
+        </div>
+      )}
       <label>
         Referencia concreta del apartado
         <input
           onChange={(event) => update("reference", event.target.value)}
+          required minLength={3} disabled={saving}
           value={draft.reference}
         />
       </label>
+      {error && <p className="form-error" role="alert">{error}</p>}
       <div className="editor-actions">
-        <button className="secondary-button compact" onClick={onCancel} type="button">
+        <button className="secondary-button compact" onClick={onCancel} disabled={saving} type="button">
           Cancelar
         </button>
-        <button className="primary-button compact" onClick={onSave} type="button">
+        <button className="primary-button compact" disabled={saving} type="submit">
           <Save size={17} />
-          Guardar
+          {saving ? "Guardando…" : creating ? "Añadir pregunta" : "Guardar"}
         </button>
       </div>
-    </div>
+    </form>
   );
 }

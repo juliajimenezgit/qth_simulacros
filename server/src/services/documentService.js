@@ -11,6 +11,7 @@ import {
 import { toVectorLiteral } from "../utils/vector.js";
 import { HttpError } from "../utils/errors.js";
 import { normalizeFilename, normalizeUnicode } from "../utils/unicode.js";
+import { isAdmin } from "../utils/roles.js";
 
 const EMBEDDING_BATCH_SIZE = 64;
 
@@ -18,7 +19,7 @@ export async function listDocuments(user) {
   const params = [];
   let ownerClause = "";
 
-  if (user.role !== "ADMIN") {
+  if (!isAdmin(user)) {
     params.push(user.id);
     ownerClause = "where d.user_id = $1";
   }
@@ -65,7 +66,7 @@ export async function renameDocument(id, user, name) {
     `update documents set display_title = $2
      where id = $1 and (user_id = $3 or $4)
      returning id, display_title`,
-    [id, normalizeUnicode(name.trim()), user.id, user.role === "ADMIN"],
+    [id, normalizeUnicode(name.trim()), user.id, isAdmin(user)],
   );
   if (!rows[0]) throw new HttpError(404, "Temario no encontrado");
   return rows[0];
@@ -81,7 +82,7 @@ export async function createDocumentRecord({ userId, user, file, contentType, du
       `select id, original_filename, display_title, storage_path from documents
        where lower(trim(original_filename)) = lower(trim($1))
        and (user_id = $2 or $3) order by created_at desc for update`,
-      [originalFilename, userId, user?.role === "ADMIN"],
+      [originalFilename, userId, isAdmin(user)],
     );
     if (matches.length && !["keep", "replace"].includes(duplicateAction)) {
       throw new HttpError(409, "Ya existe un documento con el mismo nombre", {
@@ -264,7 +265,7 @@ export async function deleteDocuments({ user, ids = [], all = false }) {
     const params = [];
     const clauses = [];
 
-    if (user.role !== "ADMIN") {
+    if (!isAdmin(user)) {
       params.push(user.id);
       clauses.push(`user_id = $${params.length}`);
     }
@@ -349,7 +350,7 @@ export async function assertDocumentAccess(documentId, user) {
     return null;
   }
 
-  if (user.role !== "ADMIN" && document.user_id !== user.id) {
+  if (!isAdmin(user) && document.user_id !== user.id) {
     return null;
   }
 

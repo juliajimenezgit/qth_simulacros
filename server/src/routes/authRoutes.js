@@ -3,6 +3,7 @@ import { z } from "zod";
 import { login } from "../services/authService.js";
 import { asyncHandler, HttpError } from "../utils/errors.js";
 import { requireAuth } from "../middleware/auth.js";
+import { recordHeartbeat } from "../services/usageService.js";
 
 const router = Router();
 
@@ -28,6 +29,16 @@ router.get(
   requireAuth,
   asyncHandler(async (req, res) => {
     res.json({ user: req.user });
+  }),
+);
+
+// Time in the app: the client calls this once a minute while its tab is visible.
+router.post(
+  "/heartbeat",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    await recordHeartbeat(req.user.id);
+    res.status(204).end();
   }),
 );
 

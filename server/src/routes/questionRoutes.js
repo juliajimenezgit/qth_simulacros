@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
+import { createManualQuestion } from "../services/manualQuestionService.js";
 import {
   deleteQuestion,
   exportQuestionsRows,
@@ -16,7 +17,15 @@ const router = Router();
 
 router.use(requireAuth);
 
+router.post(
+  "/",
+  asyncHandler(async (req, res) => {
+    res.status(201).json({ question: await createManualQuestion(req.user, req.body) });
+  }),
+);
+
 const generateSchema = z.object({
+  testDifficulty: z.enum(["PRINCIPIANTE", "FACIL", "DIFICIL", "CUSTOM"]).nullable().optional(),
   testName: z.string().trim().max(120).optional(),
   selectedDocumentIds: z.array(z.string().uuid()).min(1).max(200),
   documentCounts: z.record(z.string().uuid(), z.number().int().min(0).max(120)).optional(),

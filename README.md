@@ -172,6 +172,34 @@ Ejemplo:
 ]
 ```
 
+Roles:
+
+- `ADMIN`: administrador. Ve la pestaña Admin y los temarios, preguntas y tests de todos.
+- `DESARROLLADOR`: mismos permisos que el administrador; el rol solo sirve para distinguirlo.
+- `PROFESOR`: ve y gestiona solo sus temarios, preguntas y tests.
+
+### Equipo de prueba
+
+Para la demostración hay un equipo de prueba: Julia (desarrolladora), Jon (administrador) y cinco profesores. Define una contraseña común en `server/.env` y ejecuta:
+
+```bash
+# server/.env
+TEAM_DEMO_PASSWORD=una-contrasena-de-prueba
+
+npm --workspace server run seed:team
+```
+
+Si existe la cuenta original `admin@qthsutan.es`, pasa a ser Julia (`julia@qthsutan.es`) y conserva sus datos y su contraseña. El script se puede volver a ejecutar sin duplicar usuarios.
+
+Para que el panel de administración muestre actividad, se puede generar actividad ficticia (tiempo en la app, accesos y tests de los últimos 60 días) para Jon y los profesores. Julia conserva solo sus datos reales. Los tests ficticios no tienen preguntas y no aparecen en «Revisar preguntas».
+
+```bash
+npm --workspace server run seed:demo-activity             # crea o regenera la actividad ficticia
+npm --workspace server run seed:demo-activity -- --remove # la elimina sin tocar el uso real
+```
+
+El tiempo en la app real se mide desde el navegador: mientras la pestaña está visible, cuenta un minuto por minuto.
+
 ## Embeddings y RAG
 
 Los embeddings se guardan en PostgreSQL mediante pgvector:

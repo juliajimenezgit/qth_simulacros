@@ -15,6 +15,7 @@ let historyQueries;
 let chunkQueries;
 let balanceWrites;
 let statements;
+let testInsert;
 let audited = 0;
 let auditFormats = null;
 // A realistic mix within the caps: INCORRECTA under 25%, Todas/Ninguna under 15%.
@@ -30,7 +31,10 @@ mock.module('../src/db/pool.js', { namedExports: {
   query: async (sql, params) => {
     statements.push(sql);
     if (sql.includes('select id, content_type')) return { rows: params[0].map(id => ({ id, content_type: 'TEMA' })) };
-    if (sql.includes('insert into question_sets')) return { rows: [{ id: 'test', name: 'Prueba' }] };
+    if (sql.includes('insert into question_sets')) {
+      testInsert = { sql, params };
+      return { rows: [{ id: 'test', name: 'Prueba', test_difficulty: params[5] }] };
+    }
     if (sql.includes('q.*')) return { rows: saved.map(row => ({ ...row, original_filename: 'Hidraulica.pdf', content_type: 'TEMA' })) };
     if (sql.includes('embedding is null')) return { rows: [] };
     if (sql.includes('from document_chunks')) { chunkQueries.push({ sql, params }); return { rows: chunks }; }
@@ -100,7 +104,7 @@ mock.module('../src/services/qualityKnowledgeService.js', { namedExports: {
   },
   formatPrivateQualityKnowledge: () => ({ rules: '', annotations: '', officialExamples: '' }),
 } });
-const { generateQuestions, generateConfiguredQuestions, exportQuestionsRows, updateQuestion, deleteQuestion, markInterruptedQuestionSets } = await import('../src/services/questionService.js');
+const { generateQuestions, generateConfiguredQuestions, exportQuestionsRows, updateQuestion, deleteQuestion, markInterruptedQuestionSets, listQuestions } = await import('../src/services/questionService.js');
 const question = (text) => ({
   question: text, option_a: 'Uno', option_b: 'Dos', option_c: 'Tres', option_d: 'Cuatro',
   correct_answer: 'A', explanation: 'Explicación suficiente', source_title: 'Hidráulica',
@@ -307,4 +311,50 @@ test('marks the tests left generating by a server restart as interrupted, keepin
   const sql = statements.find(statement => statement.includes("where status = 'GENERATING'"));
   assert.match(sql, /set status = 'ERROR'/);
   assert.match(sql, /select count\(\*\) from questions where question_set_id = question_sets.id/);
+});
+
+test('lets the developer see every teacher\'s questions, like the administrator', async () => {
+  reset([]);
+  await listQuestions({ id: 'julia', role: 'DESARROLLADOR' });
+  await listQuestions({ id: 'laura', role: 'PROFESOR' });
+  const listings = statements.filter(sql => sql.includes('q.*'));
+  assert.doesNotMatch(listings[0], /q.user_id = \$/);
+  assert.match(listings[1], /q.user_id = \$1/);
+});
+
+test('hides the demo tests from the content views', async () => {
+  reset([]);
+  const { listQuestionSets } = await import('../src/services/questionService.js');
+  await listQuestionSets({ id: 'julia', role: 'DESARROLLADOR' });
+  await listQuestionSets({ id: 'laura', role: 'PROFESOR' });
+  const listings = statements.filter(sql => sql.includes('from question_sets qs'));
+  assert.match(listings[0], /where not qs.is_demo\s+group by/);
+  assert.match(listings[1], /where not qs.is_demo and qs.user_id = \$1/);
+});
+
+
+test('persists the selected test difficulty separately from question levels', async () => {
+  reset([[question('Pregunta del test fácil')]]);
+  await generateConfiguredQuestions({ user: input.user, selectedDocumentIds: ['document'],
+    contentCounts: { TEMA: 1, MANUAL: 0, CAPITULO: 0 }, difficultyCounts: { P: 0, F: 1, D: 0 },
+    testDifficulty: 'FACIL', testName: 'Prueba' });
+  assert.match(testInsert.sql, /test_difficulty/);
+  assert.equal(testInsert.params[5], 'FACIL');
+  assert.deepEqual(JSON.parse(testInsert.params[3]), { P: 0, F: 1, D: 0 });
+});
+
+test('exports manual wording, explanation and source metadata without automatic rewriting', async () => {
+  reset([]);
+  saved.push({ id: 'manual', is_manual: true, question: 'Enunciado literal del profesor',
+    option_a: 'Uno', option_b: 'Dos', option_c: 'Tres', option_d: 'Cuatro', correct_answer: 'C',
+    explanation: 'Página 14: explicación escrita por el profesor.', source_title: 'Manual propio',
+    topic: 'Tema propio', chapter: 'Capítulo propio', reference: 'Página 14', difficulty: 'FACIL' });
+  const [row] = await exportQuestionsRows(input.user, '', 'test');
+  assert.equal(row.Pregunta, 'Enunciado literal del profesor');
+  assert.equal(row.Explicacion, 'Página 14: explicación escrita por el profesor.');
+  assert.equal(row.Manual, 'Manual propio');
+  assert.equal(row.Tema, 'Tema propio');
+  assert.equal(row.Capitulo, 'Capítulo propio');
+  assert.equal(row.Correcta, 'C');
+  assert.equal(row.Nivel, 'F');
 });

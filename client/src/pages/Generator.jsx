@@ -1,6 +1,7 @@
 import { ChevronDown, ChevronRight, Play } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { TEST_DIFFICULTIES, distributeTestDifficulty } from "../utils/testDifficulty.js";
 import QuestionReview from "../components/QuestionReview.jsx";
 import { api } from "../services/api.js";
 import { toggleDocumentSelection } from "../utils/documentSelection.js";
@@ -18,6 +19,7 @@ export default function Generator() {
   const [questionTotal, setQuestionTotal] = useState(10);
   const [contentMode, setContentMode] = useState("complete");
   const [documentCounts, setDocumentCounts] = useState({});
+  const [testDifficulty, setTestDifficulty] = useState("DIFICIL");
   const [difficultyCounts, setDifficultyCounts] = useState({ P: 4, F: 3, D: 3 });
   // The generation itself lives in GenerationContext so it survives leaving this page.
   const { generation, start, markSeen } = useGeneration();
@@ -84,15 +86,16 @@ export default function Generator() {
     setSelectedDocumentIds((current) => toggleDocumentSelection(availableDocuments, current, document));
   }
 
-  function applyDifficultyPreset(levels) {
-    const nextCounts = { P: 0, F: 0, D: 0 };
-    levels.forEach((level, index) => {
-      nextCounts[level] =
-        Math.floor(questionTotal / levels.length) +
-        (index < questionTotal % levels.length ? 1 : 0);
-    });
-    setDifficultyCounts(nextCounts);
+  function applyDifficultyPreset(difficulty) {
+    setTestDifficulty(difficulty);
+    setDifficultyCounts(distributeTestDifficulty(difficulty, questionTotal));
   }
+
+  useEffect(() => {
+    if (testDifficulty !== "CUSTOM") {
+      setDifficultyCounts(distributeTestDifficulty(testDifficulty, questionTotal));
+    }
+  }, [questionTotal, testDifficulty]);
 
   // Suggest «manual_hora» each time, unless the user typed a name of their own.
   function openNameDialog() {
@@ -114,6 +117,7 @@ export default function Generator() {
       documentCounts: Object.fromEntries(targetDocuments.map((document) => [document.id, documentCounts[document.id] || 0])),
       contentCounts,
       difficultyCounts,
+      testDifficulty,
       testName: name || undefined,
     }, { testName: name, requestedCount: questionTotal });
   }
@@ -282,14 +286,16 @@ export default function Generator() {
                   <div className="count-grid difficulty-counts">
                     {[["P", "Principiante"], ["F", "Fácil"], ["D", "Difícil"]].map(([key, label]) => <label key={key}>
                       <span>{label}</span>
-                      <input type="number" min="0" max={questionTotal} value={difficultyCounts[key]} onChange={(event) => updateCount(setDifficultyCounts, key, event.target.value)} />
+                      <input type="number" min="0" max={questionTotal} value={difficultyCounts[key]} onChange={(event) => { setTestDifficulty("CUSTOM"); updateCount(setDifficultyCounts, key, event.target.value); }} />
                       <small>preguntas</small>
                     </label>)}
                   </div>
                   <div className="difficulty-presets"><span>Repartir automáticamente</span><div>
-                    <button type="button" onClick={() => applyDifficultyPreset(["P", "F"])}>Conseguir Principiante<small>P + F</small></button>
-                    <button type="button" onClick={() => applyDifficultyPreset(["F", "D"])}>Conseguir Fácil<small>F + D</small></button>
-                    <button type="button" onClick={() => applyDifficultyPreset(["P", "F", "D"])}>Conseguir Difícil<small>P + F + D</small></button>
+                    {Object.entries(TEST_DIFFICULTIES).map(([value, preset]) => (
+                      <button key={value} type="button" aria-pressed={testDifficulty === value} onClick={() => applyDifficultyPreset(value)}>
+                        {preset.label}<small>{preset.levels.join(" + ")}</small>
+                      </button>
+                    ))}
                   </div></div>
                   <p className={`allocation-status ${difficultyTotal === questionTotal ? "complete" : ""}`} role="status">{difficultyTotal} de {questionTotal} preguntas con dificultad asignada. {remainingText(difficultyTotal)}</p>
                 </section>

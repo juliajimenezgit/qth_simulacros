@@ -14,7 +14,7 @@ export async function requireAuth(req, res, next) {
 
     const payload = jwt.verify(token, env.jwtSecret);
     const { rows } = await query(
-      "select id, name, email, role from users where id = $1",
+      "select id, name, email, role from users where id = $1 and deleted_at is null",
       [payload.sub],
     );
 

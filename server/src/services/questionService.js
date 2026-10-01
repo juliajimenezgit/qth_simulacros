@@ -28,6 +28,7 @@ import {
   formatPrivateQualityKnowledge,
   retrievePrivateQualityKnowledge,
 } from "./qualityKnowledgeService.js";
+import { isAdmin } from "../utils/roles.js";
 
 function normalizeDifficulty(value) {
   const normalized = String(value || "")
@@ -68,7 +69,7 @@ export async function listQuestions(user, filters = {}) {
   const params = [];
   const clauses = [];
 
-  if (user.role !== "ADMIN") {
+  if (!isAdmin(user)) {
     params.push(user.id);
     clauses.push(`q.user_id = $${params.length}`);
   }
@@ -121,7 +122,7 @@ export async function markInterruptedQuestionSets() {
 export async function listQuestionSets(user) {
   const params = [];
   let ownerClause = "";
-  if (user.role !== "ADMIN") {
+  if (!isAdmin(user)) {
     params.push(user.id);
     ownerClause = "where qs.user_id = $1";
   }
@@ -129,7 +130,7 @@ export async function listQuestionSets(user) {
     `select qs.*, count(q.id)::int as question_count
      from question_sets qs
      left join questions q on q.question_set_id = qs.id
-     ${ownerClause}
+     where not qs.is_demo ${ownerClause.replace("where", "and")}
      group by qs.id
      order by qs.created_at desc`,
     params,
@@ -138,6 +139,8 @@ export async function listQuestionSets(user) {
 }
 
 function applyDocumentHierarchy(row) {
+  // Keep the teacher's wording and source fields intact in review and exports.
+  if (row.is_manual) return row;
   const originalFilename = normalizeFilename(row.original_filename);
   const manualFilename = resolveManualFilename(originalFilename);
   const sourceLabel = formatCeisSourceLabel(row.display_title, originalFilename);
@@ -458,12 +461,13 @@ export async function generateConfiguredQuestions({
   contentCounts,
   documentCounts,
   difficultyCounts,
+  testDifficulty = null,
   testName,
 }) {
   const uniqueDocumentIds = [...new Set(selectedDocumentIds)];
   const params = [uniqueDocumentIds];
   let ownerClause = "";
-  if (user.role !== "ADMIN") {
+  if (!isAdmin(user)) {
     params.push(user.id);
     ownerClause = `and user_id = $${params.length}`;
   }
@@ -524,10 +528,10 @@ export async function generateConfiguredQuestions({
     timeZone: "Europe/Madrid",
   }).format(new Date())}`;
   const { rows: testRows } = await query(
-    `insert into question_sets (user_id, name, requested_count)
-     values ($1, $2, $3)
+    `insert into question_sets (user_id, name, requested_count, difficulty_counts, document_ids, test_difficulty)
+     values ($1, $2, $3, $4, $5, $6)
      returning *`,
-    [user.id, normalizeUnicode(testName || automaticName), requestedCount],
+    [user.id, normalizeUnicode(testName || automaticName), requestedCount, JSON.stringify(difficultyCounts), uniqueDocumentIds, testDifficulty],
   );
   const test = testRows[0];
   const progress = createProgress({ name: test.name, requested: requestedCount });
@@ -985,7 +989,7 @@ export async function updateQuestion(questionId, user, payload) {
   params.push(questionId);
   const idParam = params.length;
   let ownerClause = "";
-  if (user.role !== "ADMIN") {
+  if (!isAdmin(user)) {
     params.push(user.id);
     ownerClause = `and user_id = $${params.length}`;
   }
@@ -1008,7 +1012,7 @@ export async function updateQuestion(questionId, user, payload) {
 export async function deleteQuestion(questionId, user) {
   const params = [questionId];
   let ownerClause = "";
-  if (user.role !== "ADMIN") {
+  if (!isAdmin(user)) {
     params.push(user.id);
     ownerClause = "and user_id = $2";
   }

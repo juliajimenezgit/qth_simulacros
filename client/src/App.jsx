@@ -8,6 +8,7 @@ import Documents from "./pages/Documents.jsx";
 import Generator from "./pages/Generator.jsx";
 import Questions from "./pages/Questions.jsx";
 import AdminDashboard from "./pages/AdminDashboard.jsx";
+import { isAdminRole } from "./utils/roles.js";
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -58,8 +59,8 @@ export default function App() {
         <Route path="/temarios" element={<Documents user={user} />} />
         <Route path="/crear" element={<Generator />} />
         <Route path="/preguntas" element={<Questions user={user} />} />
-        {user.role === "ADMIN" && (
-          <Route path="/admin" element={<AdminDashboard />} />
+        {isAdminRole(user.role) && (
+          <Route path="/admin" element={<AdminDashboard user={user} />} />
         )}
         <Route path="*" element={<Navigate to="/temarios" replace />} />
       </Route>

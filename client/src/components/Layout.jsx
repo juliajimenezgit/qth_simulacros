@@ -8,10 +8,12 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { api } from "../services/api.js";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { useGeneration } from "../context/GenerationContext.jsx";
 import AppFooter from "./AppFooter.jsx";
+import { isAdminRole, ROLE_LABELS } from "../utils/roles.js";
 
 // Visible from every section: whether a generation is running, finished or failed.
 function GenerationBadge({ generation }) {
@@ -24,7 +26,24 @@ function GenerationBadge({ generation }) {
   return null;
 }
 
+// Time in the app: one ping per minute while the tab is visible (the server ignores duplicates).
+function useUsageHeartbeat() {
+  useEffect(() => {
+    const ping = () => {
+      if (document.visibilityState === "visible") api.heartbeat().catch(() => {});
+    };
+    ping();
+    const timer = setInterval(ping, 60_000);
+    document.addEventListener("visibilitychange", ping);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", ping);
+    };
+  }, []);
+}
+
 export default function Layout({ auth }) {
+  useUsageHeartbeat();
   const { generation } = useGeneration();
   const location = useLocation();
   const onGenerator = location.pathname === "/crear";
@@ -44,7 +63,7 @@ export default function Layout({ auth }) {
     { to: "/preguntas", label: "Revisar preguntas", icon: FileQuestion },
   ];
 
-  if (auth.user.role === "ADMIN") {
+  if (isAdminRole(auth.user.role)) {
     links.push({ to: "/admin", label: "Admin", icon: Shield });
   }
 
@@ -86,7 +105,7 @@ export default function Layout({ auth }) {
             <Gauge size={18} />
             <div>
               <strong>{auth.user.name}</strong>
-              <span>{auth.user.role === "ADMIN" ? "Administrador" : "Profesor"}</span>
+              <span>{ROLE_LABELS[auth.user.role] || "Profesor"}</span>
             </div>
           </div>
           <button className="ghost-button logout-button" onClick={auth.logout} type="button" aria-label="Salir" title={collapsed ? "Salir" : undefined}>

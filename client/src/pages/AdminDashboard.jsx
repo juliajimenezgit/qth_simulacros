@@ -1,37 +1,72 @@
-import { BarChart3, BookOpen, FileQuestion, Shield, Sparkles, Trash2, UserPlus, Users } from "lucide-react";
-import { useEffect, useState } from "react";
+import { BookOpen, CheckCircle2, FileQuestion, Layers, Pencil, Save, Timer, Trash2, UserPlus, Users } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import StatCard from "../components/StatCard.jsx";
+import UserDetail from "../components/UserDetail.jsx";
 import { api } from "../services/api.js";
+import { ROLE_LABELS } from "../utils/roles.js";
 
-export default function AdminDashboard() {
-  const [stats, setStats] = useState(null);
-  const [users, setUsers] = useState([]);
-  const [instructions, setInstructions] = useState([]);
-  const [form, setForm] = useState({
-    name: "",
-    email: "",
-    password: "",
+const LEVELS = [["PRINCIPIANTE", "P"], ["FACIL", "F"], ["DIFICIL", "D"]];
+const EMPTY_USER = { name: "", email: "", password: "", role: "PROFESOR" };
+
+// What each role can do, as the server enforces it (utils/roles.js and the owner checks in the services).
+const ROLE_PERMISSIONS = [
+  {
     role: "PROFESOR",
-  });
+    summary: "Trabaja solo con lo suyo.",
+    items: [
+      "Sube, renombra y borra sus propios temarios; no ve los de otros profesores.",
+      "Genera tests a partir de sus temarios.",
+      "Revisa, edita, borra y exporta solo sus preguntas y tests.",
+      "No ve la pestaña Admin.",
+    ],
+  },
+  {
+    role: "ADMIN",
+    summary: "Gestiona la aplicación y al equipo.",
+    items: [
+      "Ve y gestiona los temarios, preguntas y tests de todos los usuarios.",
+      "Genera tests con cualquier temario de la biblioteca.",
+      "Accede a la pestaña Admin: indicadores, equipo y gestión de usuarios.",
+      "Puede eliminar otras cuentas del equipo conservando sus contenidos.",
+      "Si da de alta un correo que ya existe, actualiza su nombre, contraseña y rol.",
+    ],
+  },
+  {
+    role: "DESARROLLADOR",
+    summary: "Mismos permisos que el administrador.",
+    items: [
+      "Puede hacer todo lo que hace el administrador.",
+      "El rol solo sirve para distinguir al equipo técnico en el panel.",
+    ],
+  },
+];
+
+const formatDuration = (seconds) => {
+  if (!seconds) return "—";
+  const minutes = Math.floor(seconds / 60);
+  return minutes ? `${minutes} min ${seconds % 60} s` : `${seconds} s`;
+};
+const formatMinutes = (minutes) => (minutes >= 60 ? `${Math.floor(minutes / 60)} h ${minutes % 60} min` : `${minutes || 0} min`);
+const percent = (part, total) => (total ? Math.round((100 * part) / total) : 0);
+const formatDate = (value) => (value
+  ? new Intl.DateTimeFormat("es-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(value))
+  : "Nunca");
+
+export default function AdminDashboard({ user }) {
+  const [deletingId, setDeletingId] = useState(null);
+  const [stats, setStats] = useState(null);
+  const [form, setForm] = useState(EMPTY_USER);
   const [error, setError] = useState("");
-  const [instructionForm, setInstructionForm] = useState({
-    title: "",
-    content: "",
-    difficulty: null,
-    active: true,
-  });
+  const [notice, setNotice] = useState("");
+  const [selectedUserId, setSelectedUserId] = useState(null);
+  // Id of the user being edited; null while the form creates a new one.
+  const [editingId, setEditingId] = useState(null);
+  const formRef = useRef(null);
 
   async function load() {
     setError("");
     try {
-      const [statsData, usersData, instructionsData] = await Promise.all([
-        api.adminStats(),
-        api.users(),
-        api.qualityInstructions(),
-      ]);
-      setStats(statsData);
-      setUsers(usersData.users);
-      setInstructions(instructionsData.instructions);
+      setStats(await api.adminStats());
     } catch (err) {
       setError(err.message);
     }
@@ -41,261 +76,216 @@ export default function AdminDashboard() {
     load();
   }, []);
 
-  async function createUser(event) {
+  async function saveUser(event) {
     event.preventDefault();
-    try {
-      await api.createUser(form);
-      setForm({ name: "", email: "", password: "", role: "PROFESOR" });
-      await load();
-    } catch (err) {
-      setError(err.message);
-    }
-  }
-
-  async function createInstruction(event) {
-    event.preventDefault();
+    setNotice("");
     setError("");
     try {
-      await api.createQualityInstruction(instructionForm);
-      setInstructionForm({ title: "", content: "", difficulty: null, active: true });
+      if (editingId) {
+        const { user } = await api.updateUser(editingId, form);
+        setNotice(`Datos de ${user.name} guardados${form.password ? ", con la nueva contraseña" : ""}.`);
+      } else {
+        const { user } = await api.createUser(form);
+        setNotice(`${user.name} ya puede entrar como ${ROLE_LABELS[user.role]?.toLowerCase() || user.role}.`);
+      }
+      setForm(EMPTY_USER);
+      setEditingId(null);
       await load();
     } catch (err) {
       setError(err.message);
     }
   }
 
-  async function toggleInstruction(instruction) {
+  async function removeUser(member) {
+    if (deletingId) return;
+    if (!window.confirm(`¿Eliminar a ${member.name} (${member.email}) del equipo? Perderá el acceso a la aplicación. Sus temarios, preguntas y tests se conservarán.`)) return;
+    setDeletingId(member.id);
+    setError("");
+    setNotice("");
     try {
-      await api.updateQualityInstruction(instruction.id, {
-        active: !instruction.active,
-      });
+      await api.deleteUser(member.id);
+      if (editingId === member.id) cancelEditing();
+      if (selectedUserId === member.id) setSelectedUserId(null);
+      setNotice(`${member.name} ya no forma parte del equipo. Sus contenidos se han conservado.`);
       await load();
     } catch (err) {
       setError(err.message);
+    } finally {
+      setDeletingId(null);
     }
   }
 
-  async function removeInstruction(id) {
-    try {
-      await api.deleteQualityInstruction(id);
-      await load();
-    } catch (err) {
-      setError(err.message);
-    }
+  function startEditing(member) {
+    setEditingId(member.id);
+    setForm({ name: member.name, email: member.email, password: "", role: member.role });
+    setNotice("");
+    formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function cancelEditing() {
+    setEditingId(null);
+    setForm(EMPTY_USER);
   }
 
   const totals = stats?.totals || {};
+  const levels = stats?.levels || {};
+  const levelTotal = LEVELS.reduce((sum, [key]) => sum + (levels[key] || 0), 0);
+  const finishedTests = (totals.tests_completados || 0) + (totals.tests_error || 0);
 
   return (
-    <section className="page">
+    <section className="page admin-page">
       <header className="page-header">
         <div>
           <p>Administración</p>
-          <h1>Dashboard global</h1>
+          <h1>Panel de control</h1>
+          <span className="page-description">Uso de la aplicación, calidad de la generación y equipo.</span>
         </div>
       </header>
 
-      {error && <p className="form-error">{error}</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      {notice && <p className="generation-success" role="status">{notice}</p>}
 
-      <div className="stats-grid">
-        <StatCard
-          icon={Users}
-          label="Profesores"
-          value={totals.total_profesores || 0}
-        />
-        <StatCard icon={BookOpen} label="Temarios" value={totals.total_temarios || 0} />
+      <div className="stats-grid admin-kpis">
         <StatCard
           icon={FileQuestion}
-          label="Preguntas"
-          value={totals.total_preguntas || 0}
+          label="Preguntas generadas"
+          value={totals.preguntas_total ?? "—"}
+          detail={`${totals.preguntas_30d || 0} en los últimos 30 días`}
         />
         <StatCard
-          icon={Shield}
-          label="Procesando"
-          value={totals.temarios_procesando || 0}
+          icon={CheckCircle2}
+          label="Tests completados"
+          value={`${percent(totals.tests_completados, finishedTests)} %`}
+          detail={`${totals.tests_completados || 0} de ${finishedTests} tests terminados${totals.tests_generando ? ` · ${totals.tests_generando} en curso` : ""}`}
+        />
+        <StatCard
+          icon={Timer}
+          label="Tiempo medio por test"
+          value={formatDuration(totals.segundos_medios_test)}
+          detail={totals.segundos_medios_pregunta ? `unos ${totals.segundos_medios_pregunta} s por pregunta` : "Sin tests completados"}
+        />
+        <StatCard
+          icon={Users}
+          label="Profesores activos"
+          value={`${totals.profesores_activos_30d || 0} de ${totals.profesores_total || 0}`}
+          detail="con algún test en los últimos 30 días"
+        />
+        <StatCard
+          icon={BookOpen}
+          label="Temarios disponibles"
+          value={totals.temarios_disponibles ?? "—"}
+          detail={`${totals.temarios_procesando || 0} procesando · ${totals.temarios_error || 0} con error`}
+        />
+        <StatCard
+          icon={Layers}
+          label="Reparto por nivel"
+          value={LEVELS.map(([key, short]) => `${short} ${percent(levels[key] || 0, levelTotal)} %`).join(" · ")}
+          detail={`${levelTotal} preguntas clasificadas`}
         />
       </div>
 
-      <div className="admin-grid">
-        <section className="tool-panel">
-          <h2>Profesores</h2>
-          <div className="ranking">
-            {(stats?.questionsByTeacher || []).map((teacher) => (
-              <div key={teacher.id}>
-                <span>{teacher.name}</span>
-                <strong>{teacher.total}</strong>
-              </div>
-            ))}
+      <section className="tool-panel">
+          <h2>Equipo</h2>
+          <p className="muted-text">Pincha en una persona para ver su ficha completa.</p>
+          <div className="team-table-wrapper">
+            <table className="team-table">
+              <thead>
+                <tr>
+                  <th>Nombre</th>
+                  <th>Rol</th>
+                  <th>En la app (30 d)</th>
+                  <th>Tests</th>
+                  <th>Preguntas</th>
+                  <th>Último acceso</th>
+                  <th><span className="sr-only">Acciones</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {(stats?.team || []).map((member) => (
+                  <tr className="team-row" key={member.id} onClick={() => setSelectedUserId(member.id)}>
+                    <td>
+                      {/* A real button keeps the row reachable with the keyboard. */}
+                      <button className="team-member-button" onClick={(event) => { event.stopPropagation(); setSelectedUserId(member.id); }} type="button">
+                        <strong>{member.name}</strong>
+                        <small>{member.email}</small>
+                      </button>
+                    </td>
+                    <td><span className={`role-badge role-${member.role.toLowerCase()}`}>{ROLE_LABELS[member.role] || member.role}</span></td>
+                    <td>{formatMinutes(member.minutos_30d)}</td>
+                    <td title={`${member.tests_completados} completados de ${member.tests}`}>
+                      {member.tests_completados}/{member.tests}
+                    </td>
+                    <td>{member.preguntas}</td>
+                    <td>{formatDate(member.ultimo_acceso)}</td>
+                    <td>
+                      <button disabled={Boolean(deletingId)} aria-label={`Editar a ${member.name}`} className="ghost-button" onClick={(event) => { event.stopPropagation(); startEditing(member); }} title="Editar" type="button">
+                        <Pencil size={16} />
+                      </button>
+                      <button className="danger-button compact icon-button" type="button"
+                        aria-label={`Eliminar a ${member.name}`}
+                        title={member.id === user?.id ? "No puedes eliminar tu propia cuenta" : "Eliminar del equipo"}
+                        disabled={Boolean(deletingId) || member.id === user?.id}
+                        onClick={(event) => { event.stopPropagation(); removeUser(member); }}>
+                        <Trash2 size={16} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-        </section>
+      </section>
 
-        <form className="tool-panel" onSubmit={createUser}>
-          <h2>Usuario autorizado</h2>
-          <label>
-            Nombre
-            <input
-              onChange={(event) => setForm({ ...form, name: event.target.value })}
-              required
-              value={form.name}
-            />
+      <form className="tool-panel admin-user-form" onSubmit={saveUser} ref={formRef}>
+        <h2>{editingId ? `Editar a ${stats?.team?.find((member) => member.id === editingId)?.name || "usuario"}` : "Añadir usuario"}</h2>
+        <p className="muted-text">No hay registro público: solo pueden entrar los usuarios que se den de alta aquí. El correo identifica a cada usuario y no se puede repetir.</p>
+        <div className="admin-user-fields">
+          <label className="field-name">
+            Nombre y apellidos
+            <input autoComplete="off" onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Ej. Laura Martín López" required value={form.name} />
           </label>
-          <label>
+          <label className="field-email">
             Email
-            <input
-              onChange={(event) => setForm({ ...form, email: event.target.value })}
-              required
-              type="email"
-              value={form.email}
-            />
+            <input autoComplete="off" onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="nombre.apellido@qthsutan.es" required type="email" value={form.email} />
           </label>
-          <div className="field-row">
-            <label>
-              Contraseña
-              <input
-                minLength="8"
-                onChange={(event) =>
-                  setForm({ ...form, password: event.target.value })
-                }
-                required
-                type="password"
-                value={form.password}
-              />
-            </label>
-            <label>
-              Rol
-              <select
-                onChange={(event) => setForm({ ...form, role: event.target.value })}
-                value={form.role}
-              >
-                <option value="PROFESOR">Profesor</option>
-                <option value="ADMIN">Admin</option>
-              </select>
-            </label>
-          </div>
-          <button className="primary-button" type="submit">
-            <UserPlus size={18} />
-            Crear usuario
-          </button>
-        </form>
-      </div>
-
-      <div className="admin-grid">
-        <section className="tool-panel">
-          <h2>Última actividad</h2>
-          <div className="activity-list">
-            {(stats?.activity || []).map((item) => (
-              <div key={item.id}>
-                <BarChart3 size={17} />
-                <span>{item.action}</span>
-                <small>{item.user_name || "Sistema"}</small>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className="tool-panel">
-          <h2>Usuarios</h2>
-          <div className="user-list">
-            {users.map((user) => (
-              <div key={user.id}>
-                <span>{user.name}</span>
-                <small>{user.email}</small>
-                <strong>{user.role}</strong>
-              </div>
-            ))}
-          </div>
-        </section>
-      </div>
-
-      <div className="admin-grid quality-instructions-grid">
-        <form className="tool-panel" onSubmit={createInstruction}>
-          <h2><Sparkles size={20} /> Instrucciones de calidad</h2>
-          <p className="muted-text">
-            Se vectorizan y se añaden al prompt solo cuando son relevantes para el lote.
-          </p>
-          <label>
-            Título
-            <input
-              maxLength="120"
-              onChange={(event) =>
-                setInstructionForm({ ...instructionForm, title: event.target.value })
-              }
-              placeholder="Ej. Distractores numéricos"
-              required
-              value={instructionForm.title}
-            />
+          <label className="field-password">
+            Contraseña
+            <input autoComplete="new-password" minLength="8" onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder={editingId ? "Sin cambios" : ""} required={!editingId} type="password" value={form.password} />
+            <small>{editingId ? "Déjala vacía para mantener la actual" : "Mínimo 8 caracteres"}</small>
           </label>
-          <label>
-            Instrucción
-            <textarea
-              maxLength="4000"
-              minLength="20"
-              onChange={(event) =>
-                setInstructionForm({ ...instructionForm, content: event.target.value })
-              }
-              placeholder="Describe una regla concreta y verificable para redactar preguntas..."
-              required
-              rows="6"
-              value={instructionForm.content}
-            />
-          </label>
-          <label>
-            Nivel al que se aplica
-            <select
-              onChange={(event) =>
-                setInstructionForm({
-                  ...instructionForm,
-                  difficulty: event.target.value || null,
-                })
-              }
-              value={instructionForm.difficulty || ""}
-            >
-              <option value="">Todos los niveles</option>
-              <option value="PRINCIPIANTE">Principiante</option>
-              <option value="FACIL">Fácil</option>
-              <option value="DIFICIL">Difícil</option>
+          <label className="field-role">
+            Rol
+            <select onChange={(event) => setForm({ ...form, role: event.target.value })} value={form.role}>
+              <option value="PROFESOR">Profesor</option>
+              <option value="ADMIN">Administrador</option>
+              <option value="DESARROLLADOR">Desarrolladora</option>
             </select>
           </label>
-          <button className="primary-button" type="submit">
-            <Sparkles size={18} /> Añadir y vectorizar
-          </button>
-        </form>
+        </div>
 
-        <section className="tool-panel">
-          <h2>Reglas disponibles</h2>
-          <div className="instruction-list">
-            {instructions.length === 0 && (
-              <p className="muted-text">Todavía no hay instrucciones adicionales.</p>
-            )}
-            {instructions.map((instruction) => (
-              <article className={instruction.active ? "" : "inactive"} key={instruction.id}>
-                <div>
-                  <strong>{instruction.title}</strong>
-                  <small>{instruction.difficulty || "TODOS"}</small>
-                </div>
-                <p>{instruction.content}</p>
-                <div className="instruction-actions">
-                  <button
-                    className="secondary-button compact"
-                    onClick={() => toggleInstruction(instruction)}
-                    type="button"
-                  >
-                    {instruction.active ? "Desactivar" : "Activar"}
-                  </button>
-                  <button
-                    aria-label={`Eliminar ${instruction.title}`}
-                    className="danger-button compact"
-                    onClick={() => removeInstruction(instruction.id)}
-                    type="button"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-              </article>
-            ))}
-          </div>
-        </section>
-      </div>
+        <div className="role-permissions" aria-label="Permisos de cada rol">
+          {ROLE_PERMISSIONS.map(({ role, summary, items }) => (
+            <article className={form.role === role ? "selected" : ""} key={role}>
+              <header>
+                <span className={`role-badge role-${role.toLowerCase()}`}>{ROLE_LABELS[role]}</span>
+                <strong>{summary}</strong>
+              </header>
+              <ul>
+                {items.map((item) => <li key={item}>{item}</li>)}
+              </ul>
+            </article>
+          ))}
+        </div>
+
+        <div className="admin-user-actions">
+          <button className="primary-button" disabled={Boolean(deletingId)} type="submit">
+            {editingId ? <Save size={18} /> : <UserPlus size={18} />}
+            {editingId ? "Guardar cambios" : "Crear usuario"}
+          </button>
+          {editingId && <button className="secondary-button" onClick={cancelEditing} type="button">Cancelar</button>}
+        </div>
+      </form>
+      {selectedUserId && <UserDetail onClose={() => setSelectedUserId(null)} userId={selectedUserId} />}
     </section>
   );
 }

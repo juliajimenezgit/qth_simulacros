@@ -89,6 +89,10 @@ export const api = {
     return request(`/api/questions${params.size ? `?${params}` : ""}`);
   },
   questionSets: () => request("/api/questions/tests"),
+  createQuestion: (payload) => request("/api/questions", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }),
   generateQuestions: (payload) =>
     request("/api/questions/generate", {
       method: "POST",
@@ -104,12 +108,22 @@ export const api = {
       method: "DELETE",
     }),
   adminStats: () => request("/api/admin/stats"),
+  userStats: (id) => request(`/api/admin/users/${id}/stats`),
+  heartbeat: () => request("/api/auth/heartbeat", { method: "POST" }),
   users: () => request("/api/admin/users"),
   createUser: (payload) =>
     request("/api/admin/users", {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  updateUser: (id, payload) =>
+    request(`/api/admin/users/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  deleteUser: (id) => request(`/api/admin/users/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  }),
   qualityInstructions: () => request("/api/admin/quality-instructions"),
   createQualityInstruction: (payload) =>
     request("/api/admin/quality-instructions", {
