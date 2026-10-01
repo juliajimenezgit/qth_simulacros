@@ -1153,23 +1153,19 @@ td small {
   padding: 14px;
 }
 
-.source-heading,
 .source-reference {
   align-items: flex-start;
   display: flex;
   gap: 10px;
 }
 
-.source-heading svg,
 .source-reference svg {
   color: var(--red);
   flex: 0 0 auto;
   margin-top: 2px;
 }
 
-.source-heading div,
-.source-reference span,
-.source-details span {
+.source-reference span {
   display: grid;
   gap: 3px;
 }
@@ -1185,18 +1181,6 @@ td small {
   color: var(--black);
   font-size: 0.9rem;
   line-height: 1.4;
-}
-
-.source-details {
-  display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.source-details span {
-  background: #ffffff;
-  border-radius: 6px;
-  padding: 9px 10px;
 }
 
 .source-reference {

@@ -4,6 +4,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import QuestionReview from "../components/QuestionReview.jsx";
 import { api } from "../services/api.js";
 import { toggleDocumentSelection } from "../utils/documentSelection.js";
+import { suggestTestName } from "../utils/testName.js";
 
 export default function Generator() {
   const [searchParams] = useSearchParams();
@@ -25,6 +26,7 @@ export default function Generator() {
   const [reviewRefreshKey, setReviewRefreshKey] = useState(0);
   const [showNameDialog, setShowNameDialog] = useState(false);
   const [testName, setTestName] = useState("");
+  const [suggestedName, setSuggestedName] = useState("");
   const [currentTest, setCurrentTest] = useState(null);
 
   const availableDocuments = useMemo(
@@ -88,6 +90,14 @@ export default function Generator() {
     setDifficultyCounts(nextCounts);
   }
 
+  // Suggest «manual_hora» each time, unless the user typed a name of their own.
+  function openNameDialog() {
+    const suggestion = suggestTestName(targetDocuments);
+    if (!testName.trim() || testName === suggestedName) setTestName(suggestion);
+    setSuggestedName(suggestion);
+    setShowNameDialog(true);
+  }
+
   async function generate() {
     setShowNameDialog(false);
     setLoading(true);
@@ -100,7 +110,7 @@ export default function Generator() {
         documentCounts: Object.fromEntries(targetDocuments.map((document) => [document.id, documentCounts[document.id] || 0])),
         contentCounts,
         difficultyCounts,
-        testName: testName.trim() || undefined,
+        testName: testName.trim() || suggestedName || undefined,
       });
       setCurrentTest(data.test);
       setMessage(
@@ -156,7 +166,7 @@ export default function Generator() {
                   if (selectedDocumentIds.length > 0) setStep(2);
                   return;
                 }
-                if (totalsMatch && !loading) setShowNameDialog(true);
+                if (totalsMatch && !loading) openNameDialog();
               }}
             >
               <section className="distribution-section" hidden={step !== 1}>
@@ -382,10 +392,10 @@ export default function Generator() {
                 autoFocus
                 maxLength="120"
                 onChange={(event) => setTestName(event.target.value)}
-                placeholder="Ej. Simulacro hidráulica — septiembre"
+                placeholder="Ej. teoriafuego_1251"
                 value={testName}
               />
-              <small>Si lo dejas vacío, se asignará automáticamente la fecha y la hora.</small>
+              <small>Sugerencia: nombre del manual y hora. Si lo dejas vacío, se usará {suggestedName}.</small>
             </label>
             <div className="dialog-actions">
               <button

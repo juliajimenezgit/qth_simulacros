@@ -13,6 +13,13 @@ export const env = {
   openaiChatModel: process.env.OPENAI_CHAT_MODEL || "gpt-4.1-mini",
   openaiEmbeddingModel:
     process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small",
+  // Requests per minute are limited by OpenAI: cap simultaneous chat calls and retry rate limits.
+  openaiMaxConcurrentRequests: Math.max(Number(process.env.OPENAI_MAX_CONCURRENT_REQUESTS || 4), 1),
+  openaiMaxRetries: Math.max(Number(process.env.OPENAI_MAX_RETRIES || 6), 0),
+  // Tokens per minute the generation may use. Empty: 80% of the limit OpenAI reports for the account.
+  openaiTokensPerMinute: Number(process.env.OPENAI_TOKENS_PER_MINUTE || 0) || null,
+  // Full detail of every rejection and OpenAI call in the terminal; by default only summaries.
+  generationVerboseLogs: process.env.GENERATION_VERBOSE_LOGS === "true",
   openaiUsageLogs: process.env.OPENAI_USAGE_LOGS !== "false",
   openaiUsageCurrency: process.env.OPENAI_USAGE_CURRENCY || "USD",
   openaiChatInputUsdPerMillion: Number(

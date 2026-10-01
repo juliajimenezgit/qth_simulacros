@@ -1,4 +1,4 @@
-import { BookOpen, Download, FileText, Save, Search, Trash2 } from "lucide-react";
+import { Download, FileText, Save, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api, getToken } from "../services/api.js";
 
@@ -260,17 +260,6 @@ export default function QuestionReview({
                     <p>{item.explanation}</p>
                   </div>
                   <aside className="question-source">
-                    <div className="source-heading">
-                      <BookOpen size={18} />
-                      <div>
-                        <small>Manual de origen</small>
-                        <strong>{item.source_title || item.original_filename}</strong>
-                      </div>
-                    </div>
-                    <div className="source-details">
-                      <span><small>Tema</small><strong>{item.topic || "No identificado"}</strong></span>
-                      <span><small>Capítulo</small><strong>{item.chapter || "No identificado"}</strong></span>
-                    </div>
                     <div className="source-reference">
                       <FileText size={16} />
                       <span><small>Referencia concreta</small><strong>{item.reference}</strong></span>
@@ -386,29 +375,6 @@ function QuestionEditor({ draft, onCancel, onChange, onSave }) {
         <textarea
           onChange={(event) => update("explanation", event.target.value)}
           value={draft.explanation}
-        />
-      </label>
-      <div className="field-row">
-        <label>
-          Manual de origen
-          <input
-            onChange={(event) => update("source_title", event.target.value)}
-            value={draft.source_title}
-          />
-        </label>
-        <label>
-          Tema
-          <input
-            onChange={(event) => update("topic", event.target.value)}
-            value={draft.topic}
-          />
-        </label>
-      </div>
-      <label>
-        Capítulo
-        <input
-          onChange={(event) => update("chapter", event.target.value)}
-          value={draft.chapter}
         />
       </label>
       <label>

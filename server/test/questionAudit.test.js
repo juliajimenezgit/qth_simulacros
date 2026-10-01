@@ -9,14 +9,20 @@ mock.module('../src/services/openaiService.js', { namedExports: { createChatJson
 const { auditCandidates, validateReview } = await import('../src/services/questionAuditService.js');
 const sourceChunk = { id: 'source', text: 'La presión de servicio es 10 bar y el caudal nominal es 20 litros por minuto.' };
 const question = { correct_answer: 'B' };
-const valid = () => ({ index: 0, format: 'CIFRA', difficulty_matches: true, same_category: true, explanation_complete: true, options: ['A', 'B', 'C', 'D'].map(letter => ({ letter, selectable: letter === 'B', plausible: true, absolutes_supported: true, evidence: 'La presión de servicio es 10 bar', reason: 'El valor del manual permite descartar los demás valores.' })) });
-test('requires a literal quote for the answer and lets it discard the distractors', () => {
+const valid = () => ({ index: 0, format: 'CIFRA', difficulty_matches: true, same_category: true, explanation_complete: true, options: ['A', 'B', 'C', 'D'].map(letter => ({ letter, selectable: letter === 'B', plausible: true, discardable_without_knowledge: false, discard_pattern: 'ninguno', absolutes_supported: true, evidence: 'La presión de servicio es 10 bar', reason: 'El valor del manual permite descartar los demás valores.' })) });
+test('requires a literal quote for the answer and lets it discard invented distractors', () => {
   const review = valid();
   assert.deepEqual(validateReview(review, question, sourceChunk), []);
+  // An acceptable invented value (12 bar) is discarded by the answer's quote.
   review.options[2].evidence = 'No se menciona en el fragmento';
   assert.deepEqual(validateReview(review, question, sourceChunk), []);
   review.options[1].evidence = 'El manual dice 200 bares';
   assert.deepEqual(validateReview(review, question, sourceChunk), ['EVIDENCIA_NO_DOCUMENTADA_B', 'EVIDENCIA_NO_DOCUMENTADA_C']);
+});
+test('rejects an invented distractor the reviewer finds implausible', () => {
+  const review = valid();
+  review.options[0].plausible = false;
+  assert.deepEqual(validateReview(review, question, sourceChunk), ['OPCION_NO_PLAUSIBLE_A']);
 });
 test('accepts quotes from other batch fragments, joined by ellipsis or split by hyphenation', () => {
   const review = valid();
@@ -91,4 +97,44 @@ test('fails closed for malformed, missing or duplicate review results', async ()
   }
   raw = JSON.stringify({ reviews: [valid()] });
   assert.deepEqual((await auditCandidates(candidates, 'PRINCIPIANTE'))[0], { errors: [], format: 'CIFRA' });
+});
+
+test('grounds an option copied from the manual even if the reviewer paraphrases every quote', () => {
+  const review = valid();
+  for (const option of review.options) option.evidence = 'Cita parafraseada por el revisor sin respaldo';
+  const copied = { ...question, option_b: 'Diez bares de presión.', option_c: 'El caudal nominal es 20 litros por minuto.' };
+  // Without a supported answer, only the option copied from the manual is grounded.
+  assert.deepEqual(validateReview(review, copied, sourceChunk), ['EVIDENCIA_NO_DOCUMENTADA_A', 'EVIDENCIA_NO_DOCUMENTADA_B', 'EVIDENCIA_NO_DOCUMENTADA_D']);
+});
+
+test('ignores location labels before a quote and grounds a short answer in the fragment', () => {
+  const review = valid();
+  for (const option of review.options) option.evidence = 'Cita parafraseada por el revisor sin respaldo';
+  review.options[1].evidence = 'Pág. 58, 3.1. Presión: La presión de servicio es 10 bar';
+  assert.deepEqual(validateReview(review, question, sourceChunk), []);
+  review.options[1].evidence = 'Cita parafraseada por el revisor sin respaldo';
+  assert.deepEqual(validateReview(review, { ...question, option_b: '10 bar.' }, sourceChunk), []);
+  assert.deepEqual(validateReview(review, { ...question, option_b: '14 bar.' }, sourceChunk), ['EVIDENCIA_NO_DOCUMENTADA_A', 'EVIDENCIA_NO_DOCUMENTADA_B', 'EVIDENCIA_NO_DOCUMENTADA_C', 'EVIDENCIA_NO_DOCUMENTADA_D']);
+});
+
+test('rejects a discardable option only with one of the three named patterns', () => {
+  const review = valid();
+  // False according to the source but no named pattern: a good distractor, not discardable.
+  review.options[0].discardable_without_knowledge = true;
+  assert.deepEqual(validateReview(review, question, sourceChunk), []);
+  review.options[0].discard_pattern = 'categoria_ajena';
+  assert.deepEqual(validateReview(review, question, sourceChunk), ['DESCARTABLE_SIN_SABER_A']);
+  // Todas/Ninguna is judged by structure, not by plausibility or discardability.
+  const withAll = { ...question, option_d: 'Todas son correctas.' };
+  const global = valid();
+  Object.assign(global.options[3], { plausible: false, discardable_without_knowledge: true, discard_pattern: 'autocontradictoria' });
+  assert.deepEqual(validateReview(global, withAll, sourceChunk), []);
+});
+
+test('shows the reviewer the source fragment and its nearest neighbours only', async () => {
+  const { reviewFragments } = await import('../src/services/questionAuditService.js');
+  const fragments = Array.from({ length: 12 }, (_, index) => ({ id: `f${index}`, page: index + 1, text: '' }));
+  const shown = reviewFragments(fragments[6], fragments);
+  assert.equal(shown[0].id, 'f6');
+  assert.deepEqual(shown.slice(1).map(chunk => chunk.page).sort((a, b) => a - b), [5, 6, 8, 9].map(page => page));
 });

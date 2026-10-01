@@ -47,6 +47,12 @@ docker compose ps
 npm --workspace server run migrate
 ```
 
+Si ya había temarios procesados antes de la migración `008_chunk_manual_page.sql`, rellena la página impresa del manual (la que se cita en las explicaciones) sin volver a procesar los PDF:
+
+```bash
+npm --workspace server run backfill:manual-pages
+```
+
 ### 5. Crear los usuarios iniciales
 
 Define los usuarios en `AUTHORIZED_USERS`, dentro de `server/.env`, y ejecuta:

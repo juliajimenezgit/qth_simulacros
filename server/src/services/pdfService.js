@@ -38,6 +38,44 @@ export async function extractPdfPages(filePath) {
     .filter((page) => page.text.length > 0);
 }
 
+// Printed page numbers sit alone on the first or last line, sometimes repeated by overlaid text («127127»).
+function printedPageCandidates(text) {
+  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  const values = new Set();
+  for (const line of [lines.at(-1), lines[0]]) {
+    if (!/^\d{1,12}$/.test(line || "")) continue;
+    if (line.length <= 4) values.add(Number(line));
+    const repeated = line.match(/^(\d{1,4})\1{1,2}$/);
+    if (repeated) values.add(Number(repeated[1]));
+  }
+  return values;
+}
+
+// Maps each PDF page to the page printed in the manual, which is what students can look up.
+// A detected offset is trusted only when a neighbouring numbered page agrees, so isolated numbers from
+// tables or figures are ignored; each page then takes the offset of the nearest trusted page, which also
+// follows manuals whose numbering shifts part-way through.
+export function manualPageNumbers(pages) {
+  const detections = pages
+    .map(({ page, text }) => ({ page, offsets: [...printedPageCandidates(text)].map((value) => value - page) }))
+    .filter(({ offsets }) => offsets.length);
+  const trusted = detections.flatMap((detection, index) => {
+    const neighbours = [detections[index - 1], detections[index + 1]].filter(Boolean);
+    const offset = detection.offsets.find((value) => neighbours.some(({ offsets }) => offsets.includes(value)));
+    return offset === undefined ? [] : [{ page: detection.page, offset }];
+  });
+  // Very short PDFs may have a single numbered page: accept it only if nothing contradicts it.
+  const distinct = new Set(detections.flatMap(({ offsets }) => offsets));
+  if (!trusted.length && distinct.size === 1) trusted.push({ page: detections[0].page, offset: [...distinct][0] });
+  const result = new Map();
+  if (!trusted.length) return result;
+  for (const { page } of pages) {
+    const nearest = trusted.reduce((best, item) => (Math.abs(item.page - page) < Math.abs(best.page - page) ? item : best));
+    result.set(page, page + nearest.offset);
+  }
+  return result;
+}
+
 export function splitIntoChunks(pages, maxChars = 2200, overlap = 260) {
   const chunks = [];
   let currentSection = null;

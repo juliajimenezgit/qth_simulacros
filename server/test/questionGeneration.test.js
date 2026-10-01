@@ -12,6 +12,12 @@ let historyQueries;
 let chunkQueries;
 let balanceWrites;
 let statements;
+let audited = 0;
+let auditFormats = null;
+// A realistic mix within the caps: INCORRECTA under 25%, Todas/Ninguna under 15%.
+const DEFAULT_FORMATS = ['DIRECTA', 'INCORRECTA', 'CIFRA', 'COMPARACION', 'TODAS_NINGUNA', 'CLASIFICACION', 'DIRECTA', 'INCORRECTA', 'CORRECTA', 'CIFRA'];
+let inFlight = 0;
+let maxInFlight = 0;
 const chunks = Array.from({ length: 60 }, (_, index) => ({
   id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
   text: `Contenido evaluable ${index}`, page: index + 1,
@@ -20,7 +26,7 @@ mock.module('../src/config/env.js', { namedExports: { env: { questionSimilarityT
 mock.module('../src/db/pool.js', { namedExports: {
   query: async (sql, params) => {
     statements.push(sql);
-    if (sql.includes('select id, content_type')) return { rows: [{ id: 'document', content_type: 'TEMA' }] };
+    if (sql.includes('select id, content_type')) return { rows: params[0].map(id => ({ id, content_type: 'TEMA' })) };
     if (sql.includes('insert into question_sets')) return { rows: [{ id: 'test', name: 'Prueba' }] };
     if (sql.includes('q.*')) return { rows: saved.map(row => ({ ...row, original_filename: 'Hidraulica.pdf', content_type: 'TEMA' })) };
     if (sql.includes('embedding is null')) return { rows: [] };
@@ -50,12 +56,18 @@ mock.module('../src/services/documentService.js', { namedExports: {
 } });
 mock.module('../src/services/openaiService.js', { namedExports: {
   isOpenAiConfigured: () => true,
+  estimatedCost: () => null,
   createEmbeddings: async (inputs) => {
     embeddingBatches.push(inputs);
     return inputs.map(input => [input.includes('Duplicada') ? 0 : [...input].reduce((value, char) => (value * 31 + char.codePointAt(0)) % 1000000007, 1)]);
   },
   createChatJson: async (messages) => {
+    if (messages[0].content.includes('corrector')) return JSON.stringify({ option_a: 'Uno corto.', option_b: 'Dos corto.', option_c: 'Tres corto.', option_d: 'Cuatro corto.', explanation: 'Explicación suficiente' });
     prompts.push(messages[1].content);
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise(resolve => setImmediate(resolve));
+    inFlight -= 1;
     const id = messages[1].content.match(/FRAGMENTO 1 \| id=([^ ]+)/)[1];
     return JSON.stringify({ questions: (responses.shift() || []).map(candidate => ({
       ...candidate, source_chunk_id: candidate.source_chunk_id ?? id,
@@ -63,7 +75,8 @@ mock.module('../src/services/openaiService.js', { namedExports: {
   },
 } });
 mock.module('../src/services/questionAuditService.js', { namedExports: {
-  auditCandidates: async candidates => candidates.map((candidate, index) => ({ errors: candidate.question.explanation === 'Explicación sin evidencia' ? ['EXPLICACION_INSUFICIENTE'] : [], format: ['DIRECTA', 'CIFRA', 'COMPARACION'][index % 3] })),
+  // Formats rotate across the whole test, like a real mix, so the per-format caps are not hit by the mock.
+  auditCandidates: async candidates => candidates.map(candidate => ({ errors: candidate.question.explanation === 'Explicación sin evidencia' ? ['EXPLICACION_INSUFICIENTE'] : [], format: (auditFormats || DEFAULT_FORMATS)[audited++ % (auditFormats || DEFAULT_FORMATS).length] })),
 } });
 mock.module('../src/services/qualityInstructionService.js', { namedExports: {
   retrieveQualityInstructions: async () => {
@@ -88,7 +101,7 @@ const question = (text) => ({
   topic: 'Conceptos', chapter: 'Conceptos', difficulty: 'FACIL',
 });
 const input = { user: { id: 'owner' }, documentId: 'document', count: 1, difficulty: 'FACIL', testId: 'test' };
-function reset(batches) { responses = batches; statements = []; balanceWrites = []; chunkQueries = []; historyQueries = []; saved = []; prompts = []; embeddingBatches = []; qualityStarted = false; privateQualityStarted = false; }
+function reset(batches) { audited = 0; auditFormats = null; maxInFlight = 0; responses = batches; statements = []; balanceWrites = []; chunkQueries = []; historyQueries = []; saved = []; prompts = []; embeddingBatches = []; qualityStarted = false; privateQualityStarted = false; }
 
 test('keeps valid siblings of an invalid candidate and saves exactly the requested count', async () => {
   reset([[{}, question('Primera pregunta válida'), question('Segunda pregunta válida')]]);
@@ -141,7 +154,12 @@ test('feeds the matched historical question back into the next attempt', async (
   assert.match(prompts[1], /Coincide con: Pregunta histórica sobre la presión/);
   assert.match(prompts[0], /Cambiar palabras.*NO crea una pregunta nueva/);
   assert.match(historyQueries[0].sql, /source_chunk_id = any\(\$3::uuid\[\]\)/);
-  assert.deepEqual(historyQueries[0].params, ['document', 'owner', chunks.slice(0, 12).map(chunk => chunk.id)]);
+  assert.deepEqual(historyQueries[0].params, ['document', 'owner', chunks.slice(0, 12).map(chunk => chunk.id), 'test']);
+  // Questions of this test come first in the exclusion list, from any document.
+  assert.match(historyQueries[0].sql, /document_id = \$1 or question_set_id = \$4/);
+  // Inside a test, duplicates are searched across the whole test, not the document history.
+  assert.ok(statements.some(sql => sql.includes('select id, question, embedding') && sql.includes('question_set_id = $2')));
+  assert.ok(!statements.some(sql => sql.includes('select id, question, embedding') && sql.includes('document_id = $2')));
 });
 
 
@@ -209,4 +227,46 @@ test('export preserves a resolved chapter in a topic document', async () => {
   saved.push({ ...question('Pregunta con capítulo verificado'), chapter: 'Capítulo 3 Hidráulica' });
   const exported = await exportQuestionsRows(input.user, '', 'test');
   assert.equal(exported[0].Capitulo, 'Capítulo 3 Hidráulica');
+});
+
+test('generates different documents in parallel and still completes the requested split', async () => {
+  reset([[question('Pregunta del primer documento')], [question('Pregunta del segundo documento')]]);
+  const result = await generateConfiguredQuestions({ user: input.user, selectedDocumentIds: ['document', 'second'],
+    contentCounts: { TEMA: 2, MANUAL: 0, CAPITULO: 0 }, documentCounts: { document: 1, second: 1 }, difficultyCounts: { P: 0, F: 2, D: 0 } });
+  assert.equal(result.test.status, 'COMPLETED');
+  assert.equal(saved.length, 2);
+  assert.equal(maxInFlight, 2);
+});
+
+test('tells the model how many INCORRECTA slots are left and forbids them once exhausted', async () => {
+  reset([Array.from({ length: 8 }, (_, index) => question(`Pregunta de cupo número ${index}`))]);
+  await generateQuestions({ ...input, count: 4 });
+  assert.match(prompts[0], /Como máximo 1 preguntas de este lote pueden pedir la INCORRECTA/);
+  assert.match(prompts[0], /option_words/);
+});
+
+test('rebalances unequal options instead of discarding the question', async () => {
+  reset([[{ ...question('Pregunta con opciones desiguales'), option_a: 'Una opción mucho más larga que todas las demás alternativas juntas.' }]]);
+  const [stored] = await generateQuestions(input);
+  assert.equal(prompts.length, 1);
+  assert.equal(stored.option_a, 'Uno corto.');
+});
+
+test('meets the INCORRECTA/Todas/Ninguna minimum by adding Ninguna instead of failing', async () => {
+  reset([Array.from({ length: 8 }, (_, index) => question(`Pregunta directa número ${index}`))]);
+  auditFormats = ['DIRECTA', 'DIRECTA', 'INCORRECTA', 'DIRECTA'];
+  const result = await generateQuestions({ ...input, count: 4 });
+  assert.equal(result.length, 4);
+  assert.equal(prompts.length, 1);
+  // 30% of 4 questions is 2: one INCORRECTA, and the last slot gets «Ninguna es correcta» (max one, 15%).
+  const withNone = result.filter(row => [row.option_a, row.option_b, row.option_c, row.option_d].includes('Ninguna es correcta.'));
+  assert.equal(withNone.length, 1);
+});
+
+test('never asks a batch for more INCORRECTA or Todas/Ninguna than the caps allow', async () => {
+  reset([Array.from({ length: 8 }, (_, index) => question(`Pregunta de un test corto ${index}`))]);
+  await generateQuestions({ ...input, count: 5 });
+  // 5 questions: at most 1 INCORRECTA and 1 Todas/Ninguna, so the batch is asked for 2, not 4.
+  assert.match(prompts[0], /En este lote, al menos 2 de las 8 preguntas/);
+  assert.match(prompts[0], /Como máximo 1 preguntas de este lote pueden incluir «Todas son correctas.»/);
 });

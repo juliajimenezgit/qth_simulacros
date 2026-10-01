@@ -65,3 +65,21 @@ test('identifies parent manual and topic without requiring parent PDFs to be upl
     manual_label: null, topic_label: null,
   });
 });
+
+test('maps PDF pages to the printed manual page', async () => {
+  const { manualPageNumbers } = await import('../src/services/pdfService.js');
+  const pages = [
+    { page: 1, text: 'TEORÍA DEL FUEGO\nportada' },
+    { page: 4, text: '1. Conceptos básicos\ntexto\n20' },
+    { page: 5, text: 'Caracterización\ntexto\n21' },
+    { page: 6, text: 'Tabla\n1500' },
+    { page: 7, text: 'texto\n23' },
+  ];
+  assert.deepEqual([...manualPageNumbers(pages)], [[1, 17], [4, 20], [5, 21], [6, 22], [7, 23]]);
+  // Numbers repeated by overlaid text («127127») and numbering that shifts part-way through.
+  const repeated = [{ page: 3, text: 'texto\n127127' }, { page: 4, text: 'texto\n128128' }, { page: 5, text: 'texto\n128' }, { page: 6, text: 'texto\n129' }];
+  assert.deepEqual([...manualPageNumbers(repeated)], [[3, 127], [4, 128], [5, 128], [6, 129]]);
+  // A single numbered page in a very short PDF, and isolated numbers that prove nothing.
+  assert.deepEqual([...manualPageNumbers([{ page: 1, text: 'portada' }, { page: 2, text: 'texto\n288' }])], [[1, 287], [2, 288]]);
+  assert.equal(manualPageNumbers([{ page: 1, text: 'Tabla\n1500' }, { page: 2, text: 'Tabla\n30' }]).size, 0);
+});

@@ -21,12 +21,17 @@ mock.module('../src/db/pool.js', { namedExports: {
 mock.module('../src/services/documentService.js', { namedExports: { assertDocumentAccess: async () => ({ status: 'AVAILABLE', original_filename: 'Hidraulica.pdf', content_type: 'TEMA' }) } });
 mock.module('../src/services/openaiService.js', { namedExports: {
   isOpenAiConfigured: () => true,
+  estimatedCost: () => null,
   createEmbedding: async () => { retrievalCalls++; return [1]; },
   createEmbeddings: async inputs => { batches.push(inputs); return inputs.map(input => [input.includes('reemplazo') ? 2 : 1]); },
   createChatJson: async () => {
     chatCalls++;
     return JSON.stringify({ questions: chatCalls === 1 ? [question('Pregunta original repetida'), question('Pregunta original repetida')] : [question('Pregunta nueva de reemplazo')] });
   },
+} });
+// The documentary review has its own tests; here it only has to approve so batching can be measured.
+mock.module('../src/services/questionAuditService.js', { namedExports: {
+  auditCandidates: async candidates => candidates.map(() => ({ errors: [], format: 'DIRECTA' })),
 } });
 mock.module('../src/services/qualityInstructionService.js', { namedExports: { retrieveQualityInstructions: async () => {
   instructionsStarted = true; await Promise.resolve(); assert.equal(knowledgeStarted, true); return [];
@@ -44,5 +49,6 @@ test('batches embeddings, skips discarded semantic retrieval and still detects s
   assert.equal(retrievalCalls, 0);
   assert.equal(chatCalls, 2);
   assert.ok(result[1].question.includes('reemplazo'));
-  assert.ok(result.every(row => row.reference === 'Manual página 1'));
+  // The model's reference is ignored: it is rebuilt from the verified fragment.
+  assert.ok(result.every(row => row.reference === 'Hidraulica.pdf - página 1 - apartado No identificado'));
 });

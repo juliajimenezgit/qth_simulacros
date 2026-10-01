@@ -12,6 +12,7 @@
     "quality:export-instructions": "node src/db/qualityInstructionsCli.js export",
     "quality:apply-instructions": "node src/db/qualityInstructionsCli.js apply",
     "seed": "node src/db/seed.js",
+    "backfill:manual-pages": "node src/db/backfillManualPages.js",
     "lint": "node --check src/index.js"
   },
   "dependencies": {

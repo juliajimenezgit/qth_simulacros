@@ -2,6 +2,7 @@ import fs from "fs/promises";
 import { query, withTransaction } from "../db/pool.js";
 import { createEmbeddings, isOpenAiConfigured } from "./openaiService.js";
 import {
+  manualPageNumbers,
   extractDocumentDisplayTitle,
   documentHierarchyFromFilename,
   extractPdfPages,
@@ -121,6 +122,7 @@ export async function processDocument(documentId) {
 
     const pages = await extractPdfPages(document.storage_path);
     const displayTitle = extractDocumentDisplayTitle(pages, document.original_filename);
+    const manualPages = manualPageNumbers(pages);
     const chunks = splitIntoChunks(pages);
 
     if (chunks.length === 0) {
@@ -137,12 +139,13 @@ export async function processDocument(documentId) {
       for (const [index, chunk] of chunks.entries()) {
         const embedding = embeddings[index];
         await client.query(
-          `insert into document_chunks (document_id, text, page, section, embedding)
-           values ($1, $2, $3, $4, $5::vector)`,
+          `insert into document_chunks (document_id, text, page, manual_page, section, embedding)
+           values ($1, $2, $3, $4, $5, $6::vector)`,
           [
             documentId,
             normalizeUnicode(chunk.text),
             chunk.page,
+            manualPages.get(chunk.page) ?? null,
             chunk.section ? normalizeUnicode(chunk.section) : null,
             embedding ? toVectorLiteral(embedding) : null,
           ],
