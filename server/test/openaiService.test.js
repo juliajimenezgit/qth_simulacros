@@ -1,5 +1,8 @@
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
+// The generation prints its progress to the terminal. In tests that output shares the channel the
+// runner uses to collect results and occasionally corrupted it («Unable to deserialize cloned data»).
+for (const method of ['log', 'info', 'warn', 'error']) mock.method(console, method, () => {});
 let active = 0;
 let maxActive = 0;
 let failures = [];

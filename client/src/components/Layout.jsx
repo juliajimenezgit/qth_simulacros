@@ -9,10 +9,25 @@ import {
   PanelLeftOpen,
 } from "lucide-react";
 import { useState } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
+import { useGeneration } from "../context/GenerationContext.jsx";
 import AppFooter from "./AppFooter.jsx";
 
+// Visible from every section: whether a generation is running, finished or failed.
+function GenerationBadge({ generation }) {
+  if (generation.status === "running") {
+    return <em className="nav-badge running" title="Generando preguntas">{generation.saved || 0}/{generation.requestedCount}</em>;
+  }
+  if (generation.seen === false) {
+    return <em className={`nav-badge ${generation.status === "error" ? "failed" : "ready"}`} title={generation.status === "error" ? "La generación ha fallado" : "Preguntas listas"}>{generation.status === "error" ? "!" : "✓"}</em>;
+  }
+  return null;
+}
+
 export default function Layout({ auth }) {
+  const { generation } = useGeneration();
+  const location = useLocation();
+  const onGenerator = location.pathname === "/crear";
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem("qth_sidebar_collapsed") === "true"; }
     catch { return false; }
@@ -60,6 +75,7 @@ export default function Layout({ auth }) {
               <NavLink key={link.to} to={link.to} aria-label={link.label} title={collapsed ? link.label : undefined}>
                 <Icon size={19} />
                 <span>{link.label}</span>
+                {link.to === "/crear" && <GenerationBadge generation={generation} />}
               </NavLink>
             );
           })}
@@ -81,6 +97,16 @@ export default function Layout({ auth }) {
       </aside>
 
       <main className="content">
+        {!onGenerator && generation.seen === false && (
+          <div className={`generation-notice ${generation.status === "error" ? "failed" : "ready"}`} role="status">
+            <span>
+              {generation.status === "error"
+                ? `La generación de «${generation.testName}» no se ha completado: ${generation.error}`
+                : `El test «${generation.testName}» está listo: ${generation.saved} preguntas generadas.`}
+            </span>
+            <Link to="/crear">{generation.status === "error" ? "Ver detalles" : "Revisar preguntas"}</Link>
+          </div>
+        )}
         <div className="content-body"><Outlet /></div>
         <AppFooter />
       </main>

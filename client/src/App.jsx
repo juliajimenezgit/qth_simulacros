@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
 import { api, clearToken, getToken, setToken } from "./services/api.js";
 import Layout from "./components/Layout.jsx";
+import { GenerationProvider } from "./context/GenerationContext.jsx";
 import Login from "./pages/Login.jsx";
 import Documents from "./pages/Documents.jsx";
 import Generator from "./pages/Generator.jsx";
@@ -50,6 +51,7 @@ export default function App() {
   }
 
   return (
+    <GenerationProvider>
     <Routes>
       <Route element={<Layout auth={auth} />}>
         <Route index element={<Navigate to="/temarios" replace />} />
@@ -62,5 +64,6 @@ export default function App() {
         <Route path="*" element={<Navigate to="/temarios" replace />} />
       </Route>
     </Routes>
+    </GenerationProvider>
   );
 }

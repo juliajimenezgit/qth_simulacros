@@ -105,6 +105,19 @@ export async function listQuestions(user, filters = {}) {
   return rows.map(applyDocumentHierarchy);
 }
 
+// A generation runs inside the server process: if the server restarts (nodemon does on every saved
+// file), its test would stay GENERATING forever and the app would keep showing it as in progress.
+export async function markInterruptedQuestionSets() {
+  const { rowCount } = await query(
+    `update question_sets
+     set status = 'ERROR',
+         generated_count = (select count(*) from questions where question_set_id = question_sets.id),
+         error_message = 'La generación se interrumpió porque el servidor se reinició. Las preguntas ya validadas se conservan.'
+     where status = 'GENERATING'`,
+  );
+  return rowCount;
+}
+
 export async function listQuestionSets(user) {
   const params = [];
   let ownerClause = "";

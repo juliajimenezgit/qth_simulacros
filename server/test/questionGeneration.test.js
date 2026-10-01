@@ -1,5 +1,8 @@
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
+// The generation prints its progress to the terminal. In tests that output shares the channel the
+// runner uses to collect results and occasionally corrupted it («Unable to deserialize cloned data»).
+for (const method of ['log', 'info', 'warn', 'error']) mock.method(console, method, () => {});
 import { sourceReference } from '../src/utils/questionValidation.js';
 
 let responses;
@@ -33,6 +36,7 @@ mock.module('../src/db/pool.js', { namedExports: {
     if (sql.includes('from document_chunks')) { chunkQueries.push({ sql, params }); return { rows: chunks }; }
     if (sql.includes('select question')) { historyQueries.push({ sql, params }); return { rows: saved }; }
     if (sql.includes('select id, question, embedding')) return { rows: params[0] === '[0.00000000]' || saved.some(row => row.embedding === params[0]) ? [{ id: "historical-match", question: "Pregunta histórica sobre la presión", distance: 0 }] : [] };
+    if (sql.includes("where status = 'GENERATING'")) return { rows: [], rowCount: 2 };
     if (sql.trim().startsWith('update questions')) return { rows: params.includes('missing') ? [] : [{ id: params.at(-1), sql }] };
     if (sql.trim().startsWith('delete from questions')) return { rows: [], rowCount: params[0] === 'missing' ? 0 : 1 };
     if (sql.includes('insert into questions')) {
@@ -96,7 +100,7 @@ mock.module('../src/services/qualityKnowledgeService.js', { namedExports: {
   },
   formatPrivateQualityKnowledge: () => ({ rules: '', annotations: '', officialExamples: '' }),
 } });
-const { generateQuestions, generateConfiguredQuestions, exportQuestionsRows, updateQuestion, deleteQuestion } = await import('../src/services/questionService.js');
+const { generateQuestions, generateConfiguredQuestions, exportQuestionsRows, updateQuestion, deleteQuestion, markInterruptedQuestionSets } = await import('../src/services/questionService.js');
 const question = (text) => ({
   question: text, option_a: 'Uno', option_b: 'Dos', option_c: 'Tres', option_d: 'Cuatro',
   correct_answer: 'A', explanation: 'Explicación suficiente', source_title: 'Hidráulica',
@@ -295,4 +299,12 @@ test('deletes a question only within its owner and reports a missing one', async
 test('refuses to export without a selected test', async () => {
   reset([]);
   await assert.rejects(exportQuestionsRows({ id: 'owner' }, ''), { status: 400 });
+});
+
+test('marks the tests left generating by a server restart as interrupted, keeping their questions', async () => {
+  reset([]);
+  assert.equal(await markInterruptedQuestionSets(), 2);
+  const sql = statements.find(statement => statement.includes("where status = 'GENERATING'"));
+  assert.match(sql, /set status = 'ERROR'/);
+  assert.match(sql, /select count\(\*\) from questions where question_set_id = question_sets.id/);
 });

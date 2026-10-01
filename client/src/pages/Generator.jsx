@@ -5,6 +5,7 @@ import QuestionReview from "../components/QuestionReview.jsx";
 import { api } from "../services/api.js";
 import { toggleDocumentSelection } from "../utils/documentSelection.js";
 import { suggestTestName } from "../utils/testName.js";
+import { useGeneration } from "../context/GenerationContext.jsx";
 
 export default function Generator() {
   const [searchParams] = useSearchParams();
@@ -18,10 +19,13 @@ export default function Generator() {
   const [contentMode, setContentMode] = useState("complete");
   const [documentCounts, setDocumentCounts] = useState({});
   const [difficultyCounts, setDifficultyCounts] = useState({ P: 4, F: 3, D: 3 });
-  const [loading, setLoading] = useState(false);
+  // The generation itself lives in GenerationContext so it survives leaving this page.
+  const { generation, start, markSeen } = useGeneration();
+  const loading = generation.status === "running";
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [generatorOpen, setGeneratorOpen] = useState(true);
+  // Coming back while it generates: the progress is what matters, not the form.
+  const [generatorOpen, setGeneratorOpen] = useState(() => generation.status !== "running");
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewRefreshKey, setReviewRefreshKey] = useState(0);
   const [showNameDialog, setShowNameDialog] = useState(false);
@@ -98,33 +102,36 @@ export default function Generator() {
     setShowNameDialog(true);
   }
 
-  async function generate() {
+  function generate() {
     setShowNameDialog(false);
-    setLoading(true);
     setError("");
     setMessage("");
+    setCurrentTest(null);
+    setGeneratorOpen(false);
+    const name = testName.trim() || suggestedName;
+    start({
+      selectedDocumentIds: targetDocuments.map((document) => document.id),
+      documentCounts: Object.fromEntries(targetDocuments.map((document) => [document.id, documentCounts[document.id] || 0])),
+      contentCounts,
+      difficultyCounts,
+      testName: name || undefined,
+    }, { testName: name, requestedCount: questionTotal });
+  }
 
-    try {
-      const data = await api.generateQuestions({
-        selectedDocumentIds: targetDocuments.map((document) => document.id),
-        documentCounts: Object.fromEntries(targetDocuments.map((document) => [document.id, documentCounts[document.id] || 0])),
-        contentCounts,
-        difficultyCounts,
-        testName: testName.trim() || suggestedName || undefined,
-      });
-      setCurrentTest(data.test);
-      setMessage(
-        `¡Enhorabuena! Se han generado ${data.questions.length} preguntas para “${data.test.name}”. Ya puedes revisarlas.`,
-      );
+  // Show the outcome when it arrives, also if it arrived while the user was in another section.
+  useEffect(() => {
+    if (generation.status === "done" && generation.test && currentTest?.id !== generation.test.id) {
+      setCurrentTest(generation.test);
+      setMessage(`¡Enhorabuena! Se han generado ${generation.saved} preguntas para “${generation.test.name}”. Ya puedes revisarlas.`);
       setReviewRefreshKey(Date.now());
       setGeneratorOpen(false);
       setReviewOpen(true);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
+      markSeen();
+    } else if (generation.status === "error" && generation.seen === false) {
+      setError(generation.error);
+      markSeen();
     }
-  }
+  }, [generation, currentTest, markSeen]);
 
   return (
     <section className="page generator-page">
@@ -335,6 +342,16 @@ export default function Generator() {
             </form>
           )}
         </section>
+
+        {loading && (
+          <div className="generation-progress" role="status">
+            <span className="generation-spinner" aria-hidden="true" />
+            <div>
+              <strong>Generando «{generation.testName}»: {generation.saved || 0} de {generation.requestedCount} preguntas</strong>
+              <span>Puedes seguir usando la aplicación; la generación continúa y te avisaremos al terminar.</span>
+            </div>
+          </div>
+        )}
 
         {message && (
           <div className="generation-success">
