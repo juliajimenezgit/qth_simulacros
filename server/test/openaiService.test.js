@@ -7,6 +7,8 @@ let calls = 0;
 mock.module('../src/config/env.js', { namedExports: { env: { openaiApiKey: 'key', openaiChatModel: 'model', openaiMaxConcurrentRequests: 2, openaiMaxRetries: 6, openaiUsageLogs: false, openaiTokensPerMinute: null } } });
 mock.module('openai', { defaultExport: class {
   constructor(options) { assert.equal(options.maxRetries, 6); }
+  // Results come back out of order on purpose: they must be matched by index.
+  embeddings = { create: async ({ input }) => ({ data: input.map((text, index) => ({ index, embedding: [text.length] })).reverse(), usage: { total_tokens: 10 } }) };
   chat = { completions: { create: () => ({ withResponse: async () => {
     calls += 1;
     active += 1;
@@ -58,4 +60,19 @@ test('waits for the one-minute token window instead of exceeding the budget', as
   t.mock.timers.tick(31_000);
   await pending;
   assert.equal(done, true);
+});
+
+test('explains each OpenAI failure in plain words and keeps errors already explained', async () => {
+  const { HttpError } = await import('../src/utils/errors.js');
+  assert.match(normalizeOpenAiError({ status: 401 }).message, /clave de OpenAI no es valida/);
+  assert.match(normalizeOpenAiError({ status: 403 }).message, /no tiene permisos/);
+  assert.match(normalizeOpenAiError(new Error('socket hang up'), 'crear embeddings').message, /No se ha podido crear embeddings/);
+  const explained = new HttpError(422, 'Ya explicado');
+  assert.equal(normalizeOpenAiError(explained), explained);
+});
+
+test('returns embeddings in the order of the texts and reports no cost when usage logs are off', async () => {
+  const { createEmbeddings, estimatedCost } = await import('../src/services/openaiService.js');
+  assert.deepEqual(await createEmbeddings(['a', 'bbb', 'cc']), [[1], [3], [2]]);
+  assert.equal(estimatedCost(), null);
 });

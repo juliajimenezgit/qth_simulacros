@@ -13,7 +13,9 @@
     "quality:apply-instructions": "node src/db/qualityInstructionsCli.js apply",
     "seed": "node src/db/seed.js",
     "backfill:manual-pages": "node src/db/backfillManualPages.js",
-    "lint": "node --check src/index.js"
+    "lint": "node --check src/index.js",
+    "test": "node --test --test-timeout=30000 --experimental-test-module-mocks --test-reporter=spec \"test/*.test.js\"",
+    "test:coverage": "node --test --test-timeout=30000 --experimental-test-module-mocks --experimental-test-coverage \"test/*.test.js\""
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

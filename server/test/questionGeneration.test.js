@@ -33,6 +33,8 @@ mock.module('../src/db/pool.js', { namedExports: {
     if (sql.includes('from document_chunks')) { chunkQueries.push({ sql, params }); return { rows: chunks }; }
     if (sql.includes('select question')) { historyQueries.push({ sql, params }); return { rows: saved }; }
     if (sql.includes('select id, question, embedding')) return { rows: params[0] === '[0.00000000]' || saved.some(row => row.embedding === params[0]) ? [{ id: "historical-match", question: "Pregunta histórica sobre la presión", distance: 0 }] : [] };
+    if (sql.trim().startsWith('update questions')) return { rows: params.includes('missing') ? [] : [{ id: params.at(-1), sql }] };
+    if (sql.trim().startsWith('delete from questions')) return { rows: [], rowCount: params[0] === 'missing' ? 0 : 1 };
     if (sql.includes('insert into questions')) {
       const row = { id: saved.length, question: params[4], embedding: params[16],
         option_a: params[5], option_b: params[6], option_c: params[7], option_d: params[8],
@@ -94,7 +96,7 @@ mock.module('../src/services/qualityKnowledgeService.js', { namedExports: {
   },
   formatPrivateQualityKnowledge: () => ({ rules: '', annotations: '', officialExamples: '' }),
 } });
-const { generateQuestions, generateConfiguredQuestions, exportQuestionsRows } = await import('../src/services/questionService.js');
+const { generateQuestions, generateConfiguredQuestions, exportQuestionsRows, updateQuestion, deleteQuestion } = await import('../src/services/questionService.js');
 const question = (text) => ({
   question: text, option_a: 'Uno', option_b: 'Dos', option_c: 'Tres', option_d: 'Cuatro',
   correct_answer: 'A', explanation: 'Explicación suficiente', source_title: 'Hidráulica',
@@ -269,4 +271,28 @@ test('never asks a batch for more INCORRECTA or Todas/Ninguna than the caps allo
   // 5 questions: at most 1 INCORRECTA and 1 Todas/Ninguna, so the batch is asked for 2, not 4.
   assert.match(prompts[0], /En este lote, al menos 2 de las 8 preguntas/);
   assert.match(prompts[0], /Como máximo 1 preguntas de este lote pueden incluir «Todas son correctas.»/);
+});
+
+test('edits a question only within its owner, normalising the text', async () => {
+  reset([]);
+  await updateQuestion('q1', { id: 'teacher', role: 'TEACHER' }, { question: '  ¿Qué es la pirólisis?  ', correct_answer: 'B' });
+  const update = statements.find(sql => sql.trim().startsWith('update questions'));
+  assert.match(update, /question = \$1, correct_answer = \$2/);
+  assert.match(update, /and user_id = \$4/);
+  await updateQuestion('q1', { id: 'admin', role: 'ADMIN' }, { explanation: 'Explicación revisada.' });
+  assert.doesNotMatch(statements.filter(sql => sql.trim().startsWith('update questions')).at(-1), /user_id/);
+  await assert.rejects(updateQuestion('q1', { id: 'teacher' }, {}), { status: 400 });
+  await assert.rejects(updateQuestion('missing', { id: 'teacher' }, { explanation: 'Otra explicación.' }), { status: 404 });
+});
+
+test('deletes a question only within its owner and reports a missing one', async () => {
+  reset([]);
+  await deleteQuestion('q1', { id: 'teacher', role: 'TEACHER' });
+  assert.match(statements.find(sql => sql.trim().startsWith('delete from questions')), /and user_id = \$2/);
+  await assert.rejects(deleteQuestion('missing', { id: 'admin', role: 'ADMIN' }), { status: 404 });
+});
+
+test('refuses to export without a selected test', async () => {
+  reset([]);
+  await assert.rejects(exportQuestionsRows({ id: 'owner' }, ''), { status: 400 });
 });
