@@ -37,10 +37,10 @@ export async function createEmbedding(input) {
 
 export async function createEmbeddings(inputs) {
   try {
-    const response = await getClient().embeddings.create({
+    const response = await retryRateLimited(() => getClient().embeddings.create({
       model: env.openaiEmbeddingModel,
       input: inputs,
-    });
+    }));
 
     logOpenAiUsage({
       kind: "embeddings",
@@ -88,7 +88,47 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const tokenBudget = () => env.openaiTokensPerMinute || detectedTokensPerMinute || DEFAULT_TOKENS_PER_MINUTE;
 
 // Spanish prompts average ~3.5 characters per token; count 3 to stay on the safe side, plus the answer.
-export const estimateTokens = (messages) => Math.ceil(JSON.stringify(messages).length / 3) + 1_000;
+export const estimateTokens = (messages, maxTokens = 1_000) => Math.ceil(JSON.stringify(messages).length / 3) + maxTokens;
+
+// How long OpenAI asks to wait after a 429: its headers, or the message («Please try again in 1.2s» / «in 340ms»).
+// Without it, a short wait: the per-minute budget refills continuously.
+export function retryDelay(error) {
+  const header = (name) => error?.headers?.[name] ?? error?.headers?.get?.(name);
+  const ms = Number(header("retry-after-ms"));
+  if (ms > 0) return ms;
+  const seconds = Number(header("retry-after"));
+  if (seconds > 0) return seconds * 1000;
+  const match = String(error?.message || "").match(/try again in (\d+(?:\.\d+)?)\s*(ms|s)/i);
+  if (match) return Number(match[1]) * (match[2].toLowerCase() === "ms" ? 1 : 1000);
+  return 3_000;
+}
+
+// The limit OpenAI applied, when its message says which: tokens or requests per minute.
+const limitKind = (error) => {
+  const message = String(error?.message || "");
+  if (/tokens per min|\(TPM\)/i.test(message)) return "los tokens por minuto";
+  if (/requests per min|\(RPM\)/i.test(message)) return "las peticiones por minuto";
+  return "el uso por minuto";
+};
+
+// OpenAI answers «no credits left» with the same 429 as a per-minute limit, sometimes without the
+// insufficient_quota code («429 You have no credits remaining. Add credits…»). Waiting does not fix it.
+export const isQuotaError = (error) => error?.code === "insufficient_quota"
+  || /no credits|insufficient[_ ]quota|exceeded your current quota|billing/i.test(String(error?.message || ""));
+
+// A per-minute limit clears by waiting: wait what OpenAI asks and try again, a few times, instead of failing.
+// Its own message is shown, so the limit can be identified.
+async function retryRateLimited(task, attempt = 0) {
+  try {
+    return await task();
+  } catch (error) {
+    if (error?.status !== 429 || isQuotaError(error) || attempt >= 3) throw error;
+    const wait = retryDelay(error) + attempt * 1_000;
+    console.warn(`\x1b[33m    ⚠ OpenAI limitó ${limitKind(error)}; se reintenta en ${Math.ceil(wait / 1000)} s${error?.message ? ` (${String(error.message).slice(0, 160)})` : ""}\x1b[0m`);
+    await sleep(wait);
+    return retryRateLimited(task, attempt + 1);
+  }
+}
 
 export async function reserveTokens(estimate, now = Date.now) {
   for (;;) {
@@ -107,19 +147,22 @@ export async function reserveTokens(estimate, now = Date.now) {
   }
 }
 
-export async function createChatJson(messages, temperature = 0.2) {
-  return withChatSlot(() => requestChatJson(messages, temperature));
+// maxTokens caps the answer. Without it OpenAI counts the largest possible answer against the tokens per minute,
+// so a few parallel calls «spent» the budget while using a fraction of it and were rate-limited.
+export async function createChatJson(messages, temperature = 0.2, { maxTokens = null } = {}) {
+  return withChatSlot(() => requestChatJson(messages, temperature, maxTokens));
 }
 
-async function requestChatJson(messages, temperature, attempt = 0) {
-  const reservation = await reserveTokens(estimateTokens(messages));
+async function requestChatJson(messages, temperature, maxTokens) {
+  const reservation = await reserveTokens(estimateTokens(messages, maxTokens || 1_000));
   try {
-    const { data: response, response: raw } = await getClient().chat.completions.create({
+    const { data: response, response: raw } = await retryRateLimited(() => getClient().chat.completions.create({
       model: env.openaiChatModel,
       temperature,
       response_format: { type: "json_object" },
       messages,
-    }).withResponse();
+      ...(maxTokens ? { max_completion_tokens: maxTokens } : {}),
+    }).withResponse());
 
     // Learn the account's real limit and count the tokens actually used.
     const limit = Number(raw?.headers?.get?.("x-ratelimit-limit-tokens"));
@@ -134,15 +177,7 @@ async function requestChatJson(messages, temperature, attempt = 0) {
 
     return response.choices[0]?.message?.content || "{}";
   } catch (error) {
-    // The SDK already retried; a per-minute limit still clears by waiting, so wait and try again
-    // instead of failing the whole test. An exhausted quota does not clear.
-    if (error?.status === 429 && error?.code !== "insufficient_quota" && attempt < 3) {
-      const retryAfter = Number(error?.headers?.["retry-after"] || error?.headers?.get?.("retry-after"));
-      const wait = (retryAfter > 0 ? retryAfter * 1000 : 20_000) + attempt * 10_000;
-      console.warn(`\x1b[33m    ⚠ OpenAI limitó las peticiones por minuto; se reintenta en ${Math.ceil(wait / 1000)} s\x1b[0m`);
-      await sleep(wait);
-      return requestChatJson(messages, temperature, attempt + 1);
-    }
+    // The SDK already retried and retryRateLimited waited what OpenAI asked: an exhausted quota does not clear.
     throw normalizeOpenAiError(error, "generar preguntas");
   }
 }
@@ -152,10 +187,10 @@ export function normalizeOpenAiError(error, action = "usar OpenAI") {
     return error;
   }
 
-  if (error?.code === "insufficient_quota") {
+  if (isQuotaError(error)) {
     return new HttpError(
       503,
-      `La cuenta de OpenAI no tiene cuota disponible para ${action}. Revisa el plan y la facturacion en OpenAI.`,
+      `La cuenta de OpenAI no tiene crédito disponible para ${action}. Añade saldo en platform.openai.com, en Settings → Billing, y vuelve a intentarlo.`,
     );
   }
 
@@ -163,7 +198,7 @@ export function normalizeOpenAiError(error, action = "usar OpenAI") {
   if (error?.status === 429) {
     return new HttpError(
       503,
-      `OpenAI ha limitado temporalmente las peticiones por minuto al ${action}. Espera un minuto e inténtalo de nuevo; si se repite, reduce OPENAI_MAX_CONCURRENT_REQUESTS en server/.env.`,
+      `OpenAI ha limitado temporalmente ${limitKind(error)} al ${action}. Espera un minuto e inténtalo de nuevo; si se repite, reduce OPENAI_MAX_CONCURRENT_REQUESTS en server/.env.`,
     );
   }
 

@@ -288,7 +288,7 @@ export async function generateQuestions({ user, documentId, count, difficulty, t
         qualityInstructions,
         privateQualityKnowledge,
         // Different teachers' examples in every part and attempt, so the model sees more of their variety.
-        teacherExamples: pickTeacherExamples(teacherExamples, difficulty),
+        teacherExamples: pickTeacherExamples(teacherExamples, difficulty, Math.random, partChunks[part].map((chunk) => chunk.text).join(" ")),
         validationFeedback: validationFeedback.slice(-8).map(compactFeedback),
         coverageSummary: Object.fromEntries(sectionCounts),
         formatSummary: Object.fromEntries(formatCounts),
@@ -297,7 +297,8 @@ export async function generateQuestions({ user, documentId, count, difficulty, t
         typeGuide: targets ? formatTypePlan(partPlans[part]) : "",
       });
       logVerbose(`[Generación contexto] documento=${documentId} nivel=${difficulty} parte=${part + 1}/${partSizes.length} reglas=${qualityInstructions.length} fragmentos=${partChunks[part].length} caracteres=${messages.reduce((sum, message) => sum + message.content.length, 0)}`);
-      return createChatJson(messages, temperature).then((raw) => {
+      // ~300 tokens per question written, doubled for safety.
+      return createChatJson(messages, temperature, { maxTokens: 600 * size + 500 }).then((raw) => {
         try {
           return z.object({ questions: z.array(z.unknown()) }).parse(parseModelJson(raw)).questions;
         } catch (error) {
@@ -430,7 +431,7 @@ export async function generateQuestions({ user, documentId, count, difficulty, t
             chapter: document.content_type === "CAPITULO" ? document.original_filename : answerChunk.chapter };
           const relocated = prepareQuestion({ question: located, document, sourceChunk: answerChunk });
           if (relocated) {
-            logVerbose(`[Generación referencia] «${question.question}»: página ${sourceChunk.page} → ${answerChunk.page}`);
+            if (answerChunk.page !== sourceChunk.page) logVerbose(`[Generación referencia] «${question.question}»: página ${sourceChunk.page} → ${answerChunk.page}`);
             question = located;
             prepared = relocated;
             sourceChunk = answerChunk;
@@ -841,7 +842,7 @@ ${privateKnowledge.rules}
 ANOTACIONES Y PRIORIDADES DE LOS APUNTES (priorizan qué contenido es preguntable; no sustituyen al manual como fuente factual):
 ${privateKnowledge.annotations}
 
-PREGUNTAS DE LOS PROFESORES DE QTH, NIVEL ${difficulty} (son el modelo a imitar: forma del enunciado, longitud y tipo de opciones, cómo construyen los distractores y cómo explican. No copies sus hechos ni sus preguntas; genera las tuyas solo con el contexto autorizado. La aplicación coloca las opciones y añade la referencia; tú no lo hagas):
+PREGUNTAS DE LOS PROFESORES DE QTH, NIVEL ${difficulty} (son el modelo a imitar: forma del enunciado, longitud y tipo de opciones, cómo construyen los distractores y cómo explican. Pueden ser de otro tema: solo enseñan la forma. Ningún dato, cifra, equipo, sustancia o situación de un ejemplo puede aparecer en tus preguntas si no está en el contexto autorizado; no copies sus hechos ni sus preguntas. La aplicación coloca las opciones y añade la referencia; tú no lo hagas):
 ${formatTeacherExamples(teacherExamples)}
 ${TEACHER_STYLE[difficulty]}
 ${TEACHER_GENERAL_STYLE}

@@ -44,7 +44,7 @@ ${LETTERS.map((letter) => `${letter}: ${previous[optionKey(letter)]}`).join("\n"
 Explicación: ${previous.explanation}
 Fragmento de referencia: ${sourceChunk?.text || ""}
 Devuelve exactamente: {"option_a":"...","option_b":"...","option_c":"...","option_d":"...","explanation":"..."}` },
-    ], 0);
+    ], 0, { maxTokens: 800 });
     return { ...question, ...repairSchema.parse(parseModelJson(raw)) };
   } catch (error) {
     if (env.generationVerboseLogs) console.warn(`[Generación reparación] no se pudo reequilibrar «${question.question}»: ${error.message}`);

@@ -159,8 +159,17 @@ export async function loadTeacherExamples(difficulty) {
   return (await loading).filter((example) => example.level === difficulty);
 }
 
-// One example per slot of the level mix, at random within each type so every batch sees different ones.
-export function pickTeacherExamples(examples, difficulty, random = Math.random) {
+// Words of 5 letters or more, without accents: enough to tell a sanitary text from one on breathing apparatus.
+const vocabulary = (text) => new Set(String(text || "").normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase()
+  .split(/[^a-z0-9]+/u).filter((word) => word.length >= 5));
+
+// One example per slot of the level mix. Within each type, one of the three closest to the fragments of the batch
+// (shared vocabulary), at random: examples on other subjects lent their facts (300-bar cylinders in a sanitary
+// test) and those questions were rejected for having no support in the syllabus.
+export function pickTeacherExamples(examples, difficulty, random = Math.random, contextText = "") {
+  const context = vocabulary(contextText);
+  const closeness = (example) => [...vocabulary(`${example.question} ${LETTERS.map((letter) => example[`option_${letter.toLowerCase()}`]).join(" ")}`)]
+    .filter((word) => context.has(word)).length;
   const byType = new Map();
   for (const example of examples) {
     if (!byType.has(example.type)) byType.set(example.type, []);
@@ -169,7 +178,12 @@ export function pickTeacherExamples(examples, difficulty, random = Math.random) 
   const chosen = [];
   for (const type of MIX[difficulty] || []) {
     const pool = (byType.get(type) || byType.get("CORTA") || []).filter((example) => !chosen.includes(example));
-    if (pool.length) chosen.push(pool[Math.floor(random() * pool.length)]);
+    if (!pool.length) continue;
+    const ranked = context.size ? pool.map((example) => ({ example, score: closeness(example) })).sort((a, b) => b.score - a.score) : [];
+    // Among those sharing some vocabulary; if none does, any of the type.
+    const related = ranked.filter(({ score }) => score > 0).slice(0, 3).map(({ example }) => example);
+    const closest = related.length ? related : pool;
+    chosen.push(closest[Math.floor(random() * closest.length)]);
   }
   return chosen;
 }

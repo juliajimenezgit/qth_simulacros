@@ -49,3 +49,18 @@ test('assigns the mixed «aleatorio» questions to P, F or D with the QTH guide 
   // D: long statements or calculations.
   assert.equal(level('Señala la afirmación correcta sobre la ventilación:', Array(4).fill(0).map((_, i) => `A mayor superficie de salida, mayor será el caudal y menor el diferencial ${i}.`)), 'DIFICIL');
 });
+
+test('picks, within each type, examples close to the subject of the fragments', () => {
+  const make = (question, type) => ({ question, option_a: 'Uno.', option_b: 'Dos.', option_c: 'Tres.', option_d: 'Cuatro.', correct_answer: 'A', explanation: 'Explicación suficiente del ejemplo.', type });
+  const examples = [
+    make('Si una botella de aire comprimido está cargada a 300 bares, ¿cuánto dura el equipo?', 'CORTA'),
+    make('¿Qué maniobra abre la vía aérea de una víctima inconsciente sin traumatismo cervical?', 'CORTA'),
+    make('¿Cuál es la presión de servicio de una manguera de impulsión?', 'CORTA'),
+    make('¿Qué indica la cianosis en la valoración primaria de una víctima?', 'CORTA'),
+  ];
+  const context = 'Valoración primaria de la víctima: vía aérea, maniobra frente-mentón, cianosis y traumatismo cervical.';
+  for (let run = 0; run < 20; run++) {
+    const [picked] = pickTeacherExamples(examples, 'PRINCIPIANTE', Math.random, context);
+    assert.doesNotMatch(picked.question, /botella|manguera/);
+  }
+});

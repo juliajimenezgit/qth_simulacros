@@ -204,7 +204,7 @@ ${JSON.stringify(chunks.map(({ id, text, page, section }) => ({ id, text, page, 
 Si hay fallos de auditoría previos, corrige el dictamen y copia citas continuas exactas; no reescribas la pregunta ni apruebes sin evidencia: ${JSON.stringify(previousFailures)}
 PREGUNTAS:
 ${JSON.stringify(candidates.map(({ question }, index) => ({ index, ...question })))}` },
-  ], 0.1);
+  ], 0.1, { maxTokens: 1_500 });
   let reviews;
   try { reviews = z.object({ reviews: z.array(z.unknown()) }).parse(parseModelJson(raw)).reviews; }
   catch { return candidates.map(() => ({ errors: ['AUDITORIA_JSON_INVALIDO'] })); }
